@@ -1,129 +1,127 @@
 # Build Guide
 
-A step-by-step plan to build this Spotify app (Next.js + Spotify Web API).
+How the Workload Management System is put together, and how to run, demo, and
+extend it. Maps directly to the proposal's milestones.
 
 ---
 
-## Phase 0 — Spotify Developer Setup
-
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard).
-2. **Create an app.** Note the **Client ID** and **Client Secret**.
-3. Under the app settings, add a **Redirect URI**:
-   - `http://localhost:3000/api/auth/callback/spotify`
-4. Decide which **scopes** you need. Common ones for this app:
-   - `user-read-email`, `user-read-private`
-   - `user-library-read`, `user-library-modify`
-   - `playlist-read-private`, `playlist-modify-private`
-   - `user-read-playback-state`, `user-modify-playback-state`
-   - `streaming` (required for the Web Playback SDK)
-
----
-
-## Phase 1 — Project Scaffold
+## Run it
 
 ```bash
-npx create-next-app@latest . --typescript --tailwind --app --eslint
-npm install next-auth
+pip install -r requirements.txt
+python run.py          # http://127.0.0.1:5000
+# or
+python benchmark.py    # headless 4-scheduler comparison
 ```
 
-Create `.env.local` (never commit it):
+No accounts, API keys, or Spotify Premium required — SQLite + mock providers.
 
+---
+
+## The job lifecycle (end to end)
+
+1. **Submit (Producer).** `Engine.submit` builds a `Job` (state `NEW`), persists
+   it to the `JOB` table for durability, moves it to `QUEUED`, and drops it on
+   the in-memory ready queue. This decouples intake from execution.
+2. **Schedule.** A worker thread asks the active **Scheduler** to `select()` the
+   next job from the ready queue:
+   - **FCFS** — earliest arrival.
+   - **SJF** — smallest remaining service time.
+   - **Priority** — lowest priority number.
+   - **Round Robin** — oldest last-enqueue; runs one quantum then rotates.
+   - **FairShare** — the user with the least service so far (equal share per user).
+   - **WFQ** — like FairShare but weighted by tier (PREMIUM served more). Uses
+     per-user virtual time; the engine calls `scheduler.notify_run()` after each
+     slice to advance it.
+3. **Acquire resources (Resource Manager).** Before running, the job holds a
+   worker slot; at completion it takes a rate-limited API slot and a pooled DB
+   connection — so no job starves the others.
+4. **Run (Consumer).** State → `RUNNING`. The engine simulates the CPU burst
+   (`time.sleep`). Round Robin runs only one quantum, decrements remaining time,
+   and re-queues if unfinished.
+5. **AI + music.** On completion the mock **Gemini** turns the request text into
+   attributes (tempo/valence/energy), and the mock **Spotify** returns tracks.
+6. **Persist (ACID).** `Database.save_result` writes the `PLAYLIST`, `TRACK`, and
+   `PLAYLIST_TRACK` rows and updates `JOB` — all in one transaction that rolls
+   back on any error.
+7. **Terminate + log.** State → `TERMINATED`; a `JOB_EXECUTION` row records the
+   waiting / turnaround / response times for this run's scheduler.
+
+---
+
+## The experiments
+
+`benchmark.py` runs two experiments (results also feed the web **/analytics**
+page, backed by `JOB_EXECUTION`):
+
+**1. Classic scheduling (single user).** One workload under FCFS / SJF / Priority
+/ Round Robin. Expected: **SJF** minimizes average waiting; **Round Robin** gives
+the lowest response time; **FCFS** is the baseline.
+
+**2. Fairness (multi-user).** A FREE "spammer" floods the queue (10 jobs) while a
+quiet FREE user and a PREMIUM user submit 2 each, run under FCFS vs FairShare vs
+WFQ. Expected, and what it demonstrates:
+- **FCFS** — the spammer's jobs run first, so the quiet and (worse) the *paying
+  PREMIUM* user wait the longest. Unfair.
+- **FairShare** — equal share per user; the spammer can no longer dominate.
+- **WFQ** — PREMIUM is served ~3× faster than FREE (its weight), with no
+  starvation. This is the "scheduling = business logic" payoff.
+
+Because all jobs are enqueued before the single worker starts, they effectively
+"arrive at t=0" and the differences are purely the scheduling policy.
+
+---
+
+## Database
+
+Six normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
+`PLAYLIST_TRACK` (`db/schema_sqlite.sql`). `JOB` and `JOB_EXECUTION` carry
+`user_id` + `tier` so the fairness analytics can group by user and tier.
+
+Switch to MySQL for submission:
+
+```bash
+mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS wms;"
+mysql -u root -p wms < db/schema_mysql.sql
+pip install mysql-connector-python
+# PowerShell:
+$env:WMS_DB_BACKEND="mysql"; $env:WMS_MYSQL_PASSWORD="yourpassword"; python run.py
 ```
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_CLIENT_SECRET=your_client_secret
-NEXTAUTH_SECRET=run_openssl_rand_base64_32
-NEXTAUTH_URL=http://localhost:3000
-```
-
-Also create a committed `.env.example` with the same keys and empty values.
 
 ---
 
-## Phase 2 — Authentication (OAuth)
+## Real providers + export (the 5% + 5%)
 
-1. Configure **NextAuth** with the Spotify provider in
-   `app/api/auth/[...nextauth]/route.ts`.
-2. Request the scopes from Phase 0 in the provider's `authorization` params.
-3. In the `jwt` callback, store `access_token`, `refresh_token`, and
-   `expires_at`. Add a **token refresh** helper that renews the access token
-   when expired.
-4. In the `session` callback, expose the access token to the app.
-5. Add a login button and a protected layout. Redirect unauthenticated users
-   to sign in.
+Both real providers are already implemented behind `wms/providers/`; put keys in
+`.env` and set `WMS_PROVIDERS=auto`:
 
-**Milestone:** You can log in with Spotify and see your profile name/email.
+- **Real Gemini:** free key from https://aistudio.google.com/apikey — works
+  immediately once set.
+- **Real Spotify:** client-credentials search (no user login). ⚠️ Spotify blocks
+  the Web API with 403 unless the **app owner's account has Premium**; until then
+  the provider auto-falls-back to mock. The integration is done — it starts
+  returning real tracks the moment the owner is Premium.
 
----
-
-## Phase 3 — Spotify API Client
-
-Create `lib/spotify.ts`:
-
-- A `fetchWebApi(endpoint, method, body)` helper that attaches the current
-  access token and hits `https://api.spotify.com/v1`.
-- Typed wrapper functions: `getMe()`, `getMyPlaylists()`, `getPlaylist(id)`,
-  `search(query, type)`, `getPlaybackState()`, etc.
-- Centralize error handling (401 → refresh/re-auth, 429 → respect `Retry-After`).
+**Export:** `/playlist/<job_id>` is a shareable page and `/export/<job_id>.m3u`
+downloads the playlist.
 
 ---
 
-## Phase 4 — Core UI
+## Tuning (env vars, see `config.py`)
 
-Layout resembling Spotify:
-
-1. **Sidebar** — Home, Search, library / playlist list.
-2. **Main view** — routed pages:
-   - `/` Home (recently played, featured)
-   - `/search` search box + results
-   - `/playlist/[id]` playlist detail with track list
-3. **Player bar** (bottom) — current track, play/pause, seek, volume.
-
-Fetch data in Server Components where possible; make the player a Client Component.
-
-**Milestone:** You can browse your playlists and view their tracks.
+- `WMS_WORKERS` — worker threads / CPUs (default 1, keeps scheduling visible).
+- `WMS_QUANTUM_MS` — Round Robin time slice.
+- `WMS_API_RATE` — external API requests/minute (rate limiter).
+- `WMS_DB_BACKEND` — `sqlite` (default) or `mysql`.
 
 ---
 
-## Phase 5 — Playback (Web Playback SDK)
+## Testing checklist
 
-> Requires a Spotify **Premium** account.
-
-1. Load the Web Playback SDK script in a Client Component.
-2. Initialize the player with the user's access token; create a device.
-3. Wire the player bar controls to transfer playback to this device and
-   control play/pause/next/previous/seek.
-4. Subscribe to player state to keep the UI in sync.
-
-**Milestone:** You can play a track in-browser and control it.
-
----
-
-## Phase 6 — Search & Library Features
-
-- Full-text search (tracks, artists, albums, playlists).
-- Save/remove tracks (`user-library-modify`).
-- Create/edit playlists (`playlist-modify-private`).
-
----
-
-## Phase 7 — Polish & Deploy
-
-- Loading/skeleton states, error boundaries, empty states.
-- Handle token expiry gracefully (silent refresh).
-- Responsive layout.
-- Deploy to **Vercel**:
-  - Add all env vars in the Vercel project settings.
-  - Add the production redirect URI to the Spotify dashboard:
-    `https://your-domain.vercel.app/api/auth/callback/spotify`.
-  - Set `NEXTAUTH_URL` to the production URL.
-
----
-
-## Testing Checklist
-
-- [ ] Login/logout works and refresh keeps you signed in past 1 hour
-- [ ] Playlists load for the logged-in user
-- [ ] Search returns results
-- [ ] Playback controls work (Premium)
-- [ ] No secrets committed to git
-- [ ] Production deploy works with correct redirect URIs
+- [ ] `python benchmark.py` prints the classic table **and** the fairness tables
+- [ ] `python run.py` serves the dashboard; submitting a request shows a job move
+      NEW → QUEUED → RUNNING → TERMINATED and a playlist appear
+- [ ] **Run fairness demo** under FCFS vs WFQ shows PREMIUM served faster under WFQ
+- [ ] `/analytics` shows per-scheduler, per-tier, and per-user tables
+- [ ] A playlist opens at `/playlist/<id>` and exports via `/export/<id>.m3u`
+- [ ] Runs with no API keys and no internet (mock fallback)

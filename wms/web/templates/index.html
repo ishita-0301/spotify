@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <h2>Submit a music request</h2>
+  <p class="muted">Each request becomes a <strong>job</strong> owned by a user on
+    a service tier. The scheduler decides whose job runs next on the shared,
+    rate-limited API budget.</p>
+  <form action="{{ url_for('submit') }}" method="post" class="row">
+    <input type="text" name="owner" placeholder="your name" value="guest" />
+    <label>Tier
+      <select name="tier">
+        <option value="FREE" selected>FREE</option>
+        <option value="PREMIUM">PREMIUM</option>
+      </select>
+    </label>
+    <input type="text" name="request_text" class="grow"
+           placeholder='e.g. "a relaxing study playlist"' required />
+    <label>Priority
+      <select name="priority" title="lower = higher priority">
+        <option value="1">1 (high)</option>
+        <option value="3">3</option>
+        <option value="5" selected>5</option>
+        <option value="8">8 (low)</option>
+      </select>
+    </label>
+    <button type="submit">Add job</button>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="row spread">
+    <h2>Scheduler</h2>
+    <div class="row">
+      <form action="{{ url_for('set_scheduler') }}" method="post" class="row">
+        <select name="scheduler">
+          {% for s in schedulers %}
+          <option value="{{ s }}" {% if s == active %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit">Set active</button>
+      </form>
+      <form action="{{ url_for('demo') }}" method="post">
+        <button type="submit" class="ghost" title="Seed a spammer + quiet + premium user">
+          Run fairness demo
+        </button>
+      </form>
+    </div>
+  </div>
+  <p class="muted">Active: <span class="tag">{{ active }}</span>
+    · DB: <span class="tag">{{ db_backend }}</span>
+    · providers: <span class="tag">{{ provider_mode }}</span>
+    · <a href="{{ url_for('analytics') }}">see fairness analytics →</a></p>
+  <p class="muted"><strong>FairShare</strong> gives every user an equal share;
+    <strong>WFQ</strong> weights PREMIUM users higher. Try the demo under FCFS
+    (spammer hogs everything) vs WFQ (fair) to see the difference.</p>
+</section>
+
+<section class="panel">
+  <h2>Jobs <span class="muted" id="count"></span></h2>
+  <table id="jobs">
+    <thead>
+      <tr><th>#</th><th>User</th><th>Tier</th><th>Request</th><th>Prio</th>
+          <th>Sched</th><th>State</th><th>Playlist</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script>
+const STATE_CLASS = {NEW:'s-new', QUEUED:'s-queued', RUNNING:'s-running', TERMINATED:'s-done'};
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/jobs');
+    const jobs = await res.json();
+    document.getElementById('count').textContent = '(' + jobs.length + ')';
+    const tb = document.querySelector('#jobs tbody');
+    tb.innerHTML = jobs.map(j => {
+      let playlist = '—';
+      if (j.playlist && j.playlist.tracks) {
+        playlist = `<a href="/playlist/${j.job_id}">${j.playlist.tracks.length} tracks →</a>`;
+      }
+      const cls = STATE_CLASS[j.state] || '';
+      const tierCls = j.tier === 'PREMIUM' ? 'tier-prem' : 'tier-free';
+      return `<tr>
+        <td>${j.job_id}</td><td>${j.owner}</td>
+        <td><span class="tag ${tierCls}">${j.tier}</span></td>
+        <td>${j.request_text}</td><td>${j.priority}</td>
+        <td>${j.scheduler || ''}</td>
+        <td><span class="badge ${cls}">${j.state}</span></td>
+        <td>${playlist}</td></tr>`;
+    }).join('');
+  } catch (e) { /* ignore transient errors */ }
+}
+refresh();
+setInterval(refresh, 1000);
+</script>
+{% endblock %}

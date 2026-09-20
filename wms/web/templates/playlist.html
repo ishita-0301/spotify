@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  {% if pl %}
+  <div class="row spread">
+    <h2>{{ pl.title }}</h2>
+    <a class="tag" href="{{ url_for('export_m3u', job_id=job_id) }}">Export .m3u ↓</a>
+  </div>
+  <p class="muted">{{ pl.tracks|length }} tracks · job #{{ job_id }}</p>
+  <ol>
+    {% for t in pl.tracks %}
+    <li>
+      {% if t.spotify_url %}
+        <a href="{{ t.spotify_url }}" target="_blank" rel="noopener">{{ t.name }}</a>
+      {% else %}{{ t.name }}{% endif %}
+      — <span class="muted">{{ t.artist }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="muted">No playlist found for job #{{ job_id }} (it may still be running).</p>
+  {% endif %}
+  <p><a href="{{ url_for('index') }}">← back to dashboard</a></p>
+</section>
+{% endblock %}

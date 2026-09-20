@@ -1,0 +1,9 @@
+# Web UI
+Flask>=3.0
+
+# CA certificates for HTTPS calls to the real Spotify / Gemini APIs
+certifi>=2024.0.0
+
+# Optional: only needed if you switch the DB backend to MySQL (WMS_DB_BACKEND=mysql).
+# SQLite (the default) needs nothing extra — it ships with Python.
+mysql-connector-python>=8.0
