@@ -12,8 +12,12 @@ header {
   padding: 14px 24px; border-bottom: 1px solid var(--line); background: #12141a;
 }
 .brand { font-weight: 700; font-size: 18px; }
+nav { display: flex; align-items: center; }
 nav a { color: var(--muted); text-decoration: none; margin-left: 20px; }
 nav a:hover { color: var(--text); }
+nav .who { margin-left: 20px; color: var(--text); font-size: 13px; }
+nav form.inline { display: inline; margin: 0 0 0 16px; }
+nav form.inline button { padding: 6px 12px; font-size: 13px; }
 main { max-width: 1000px; margin: 24px auto; padding: 0 16px; }
 footer { text-align: center; color: var(--muted); padding: 24px; font-size: 13px; }
 
@@ -23,6 +27,14 @@ footer { text-align: center; color: var(--muted); padding: 24px; font-size: 13px
 }
 h2 { margin: 0 0 10px; font-size: 18px; }
 .muted { color: var(--muted); font-size: 13px; }
+.live { color: var(--accent); font-size: 12px; white-space: nowrap; }
+
+.panel.narrow { max-width: 420px; margin-left: auto; margin-right: auto; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.stack label { flex-direction: column; align-items: stretch; gap: 4px; }
+.stack input, .stack select { width: 100%; }
+.error { color: #ff8a8a; background: #2a1414; border: 1px solid #5a2222;
+  border-radius: 8px; padding: 9px 12px; font-size: 13px; margin: 0 0 12px; }
 
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .row.spread { justify-content: space-between; }

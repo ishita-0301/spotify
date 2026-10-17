@@ -3,28 +3,29 @@
 <section class="panel">
   <div class="row spread">
     <h2>Scheduler comparison</h2>
-    <form action="{{ url_for('run_benchmark') }}" method="post">
-      <button type="submit">Run benchmark</button>
-    </form>
+    <div class="row">
+      <span class="live" id="updated">connecting…</span>
+      <form action="{{ url_for('run_benchmark') }}" method="post">
+        <button type="submit">Run benchmark</button>
+      </form>
+    </div>
   </div>
   <p class="muted">Average metrics per scheduler (from <code>JOB_EXECUTION</code>).
-    Lower is better; times in ms.</p>
-  {% if rows %}
+    Lower is better; times in ms. Updates live as jobs finish.</p>
   <table>
     <thead><tr><th>Scheduler</th><th>Jobs</th><th>Avg Waiting</th>
       <th>Avg Turnaround</th><th>Avg Response</th></tr></thead>
-    <tbody>
+    <tbody id="tb-sched">
       {% for r in rows %}
       <tr><td><span class="tag">{{ r.scheduler }}</span></td><td>{{ r.n }}</td>
         <td>{{ '%.1f'|format(r.avg_waiting) }}</td>
         <td>{{ '%.1f'|format(r.avg_turnaround) }}</td>
         <td>{{ '%.1f'|format(r.avg_response) }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No data yet — submit jobs or click <em>Run benchmark</em>.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {% else %}
-  <p class="muted">No data yet — submit jobs or click <em>Run benchmark</em>.</p>
-  {% endif %}
 </section>
 
 <section class="panel">
@@ -32,11 +33,10 @@
   <p class="muted">How each service tier is served under each scheduler. Under
     <strong>WFQ</strong>, PREMIUM should show lower average waiting than FREE;
     under <strong>FCFS</strong> tier makes no difference (unfair for a paid tier).</p>
-  {% if by_tier %}
   <table>
     <thead><tr><th>Scheduler</th><th>Tier</th><th>Jobs</th>
       <th>Avg Waiting</th><th>Avg Turnaround</th><th>Avg Response</th></tr></thead>
-    <tbody>
+    <tbody id="tb-tier">
       {% for r in by_tier %}
       <tr><td><span class="tag">{{ r.scheduler }}</span></td>
         <td><span class="tag {{ 'tier-prem' if r.tier=='PREMIUM' else 'tier-free' }}">{{ r.tier }}</span></td>
@@ -44,34 +44,77 @@
         <td>{{ '%.1f'|format(r.avg_waiting) }}</td>
         <td>{{ '%.1f'|format(r.avg_turnaround) }}</td>
         <td>{{ '%.1f'|format(r.avg_response) }}</td></tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No tier data yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {% else %}
-  <p class="muted">No tier data yet.</p>
-  {% endif %}
 </section>
 
 <section class="panel">
   <h2>Fairness by user</h2>
   <p class="muted">Average waiting time per user. A fair scheduler keeps these
     close across users of the same tier, even if one user floods the queue.</p>
-  {% if by_user %}
   <table>
     <thead><tr><th>Scheduler</th><th>User</th><th>Tier</th><th>Jobs</th>
       <th>Avg Waiting</th></tr></thead>
-    <tbody>
+    <tbody id="tb-user">
       {% for r in by_user %}
       <tr><td><span class="tag">{{ r.scheduler }}</span></td>
         <td>{{ r.name }}</td>
         <td><span class="tag {{ 'tier-prem' if r.tier=='PREMIUM' else 'tier-free' }}">{{ r.tier }}</span></td>
         <td>{{ r.n }}</td>
         <td>{{ '%.1f'|format(r.avg_waiting) }}</td></tr>
+      {% else %}
+      <tr><td colspan="5" class="muted">No per-user data yet. Try the fairness demo on the dashboard.</td></tr>
       {% endfor %}
     </tbody>
   </table>
-  {% else %}
-  <p class="muted">No per-user data yet. Try the fairness demo on the dashboard.</p>
-  {% endif %}
 </section>
+
+<script>
+const num = x => (x === null || x === undefined) ? '—' : Number(x).toFixed(1);
+const tierTag = t => `<span class="tag ${t === 'PREMIUM' ? 'tier-prem' : 'tier-free'}">${t}</span>`;
+const esc = s => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+function fill(id, rows, cols, emptyMsg) {
+  const tb = document.getElementById(id);
+  if (!rows.length) {
+    tb.innerHTML = `<tr><td colspan="${cols}" class="muted">${emptyMsg}</td></tr>`;
+    return;
+  }
+  tb.innerHTML = rows.map(r => '<tr>' + [
+    `<td><span class="tag">${esc(r.scheduler)}</span></td>`,
+    id === 'tb-tier' ? `<td>${tierTag(r.tier)}</td>` : '',
+    id === 'tb-user' ? `<td>${esc(r.name)}</td><td>${tierTag(r.tier)}</td>` : '',
+    `<td>${r.n}</td>`,
+    `<td>${num(r.avg_waiting)}</td>`,
+    id !== 'tb-user' ? `<td>${num(r.avg_turnaround)}</td><td>${num(r.avg_response)}</td>` : '',
+  ].join('') + '</tr>').join('');
+}
+
+let lastUpdate = null;
+async function refresh() {
+  try {
+    const res = await fetch('/api/analytics');
+    const a = await res.json();
+    fill('tb-sched', a.by_scheduler, 5, 'No data yet — submit jobs or click <em>Run benchmark</em>.');
+    fill('tb-tier', a.by_tier, 6, 'No tier data yet.');
+    fill('tb-user', a.by_user, 5, 'No per-user data yet. Try the fairness demo on the dashboard.');
+    lastUpdate = Date.now();
+  } catch (e) { /* ignore transient errors */ }
+}
+
+function tick() {
+  const el = document.getElementById('updated');
+  if (lastUpdate === null) { el.textContent = 'connecting…'; return; }
+  const secs = Math.round((Date.now() - lastUpdate) / 1000);
+  el.textContent = secs <= 0 ? '● live · updated just now' : `● live · updated ${secs}s ago`;
+}
+
+refresh();
+setInterval(refresh, 2000);
+setInterval(tick, 1000);
+tick();
+</script>
 {% endblock %}

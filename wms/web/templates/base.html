@@ -10,8 +10,19 @@
   <header>
     <div class="brand">🎧 Workload Management System</div>
     <nav>
+      {% if current_user %}
       <a href="{{ url_for('index') }}">Dashboard</a>
       <a href="{{ url_for('analytics') }}">Analytics</a>
+      <span class="who">{{ current_user.name }}
+        <span class="tag {{ 'tier-prem' if current_user.tier == 'PREMIUM' else 'tier-free' }}">{{ current_user.tier }}</span>
+      </span>
+      <form action="{{ url_for('logout') }}" method="post" class="inline">
+        <button type="submit" class="ghost">Log out</button>
+      </form>
+      {% else %}
+      <a href="{{ url_for('login') }}">Log in</a>
+      <a href="{{ url_for('signup') }}">Sign up</a>
+      {% endif %}
     </nav>
   </header>
   <main>

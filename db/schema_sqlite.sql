@@ -2,10 +2,11 @@
 -- Tables: USER, JOB, JOB_EXECUTION, TRACK, PLAYLIST, PLAYLIST_TRACK
 
 CREATE TABLE IF NOT EXISTS USER (
-    user_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL UNIQUE,
-    tier       TEXT NOT NULL DEFAULT 'FREE',   -- FREE | PREMIUM
-    created_at REAL
+    user_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL UNIQUE,
+    tier          TEXT NOT NULL DEFAULT 'FREE',   -- FREE | PREMIUM
+    password_hash TEXT,                           -- NULL = seeded (cannot log in)
+    created_at    REAL
 );
 
 CREATE TABLE IF NOT EXISTS JOB (

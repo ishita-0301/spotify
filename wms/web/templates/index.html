@@ -2,17 +2,12 @@
 {% block content %}
 <section class="panel">
   <h2>Submit a music request</h2>
-  <p class="muted">Each request becomes a <strong>job</strong> owned by a user on
-    a service tier. The scheduler decides whose job runs next on the shared,
-    rate-limited API budget.</p>
+  <p class="muted">Each request becomes a <strong>job</strong> owned by you
+    (<strong>{{ current_user.name }}</strong>, tier
+    <span class="tag {{ 'tier-prem' if current_user.tier == 'PREMIUM' else 'tier-free' }}">{{ current_user.tier }}</span>)
+    on the shared, rate-limited API budget. The scheduler decides whose job runs
+    next.</p>
   <form action="{{ url_for('submit') }}" method="post" class="row">
-    <input type="text" name="owner" placeholder="your name" value="guest" />
-    <label>Tier
-      <select name="tier">
-        <option value="FREE" selected>FREE</option>
-        <option value="PREMIUM">PREMIUM</option>
-      </select>
-    </label>
     <input type="text" name="request_text" class="grow"
            placeholder='e.g. "a relaxing study playlist"' required />
     <label>Priority
@@ -56,7 +51,10 @@
 </section>
 
 <section class="panel">
-  <h2>Jobs <span class="muted" id="count"></span></h2>
+  <div class="row spread">
+    <h2>Jobs <span class="muted" id="count"></span></h2>
+    <span class="live" id="updated">connecting…</span>
+  </div>
   <table id="jobs">
     <thead>
       <tr><th>#</th><th>User</th><th>Tier</th><th>Request</th><th>Prio</th>
@@ -68,6 +66,8 @@
 
 <script>
 const STATE_CLASS = {NEW:'s-new', QUEUED:'s-queued', RUNNING:'s-running', TERMINATED:'s-done'};
+
+let lastUpdate = null;
 
 async function refresh() {
   try {
@@ -90,9 +90,20 @@ async function refresh() {
         <td><span class="badge ${cls}">${j.state}</span></td>
         <td>${playlist}</td></tr>`;
     }).join('');
+    lastUpdate = Date.now();
   } catch (e) { /* ignore transient errors */ }
 }
+
+function tick() {
+  const el = document.getElementById('updated');
+  if (lastUpdate === null) { el.textContent = 'connecting…'; return; }
+  const secs = Math.round((Date.now() - lastUpdate) / 1000);
+  el.textContent = secs <= 0 ? '● live · updated just now' : `● live · updated ${secs}s ago`;
+}
+
 refresh();
 setInterval(refresh, 1000);
+setInterval(tick, 1000);
+tick();
 </script>
 {% endblock %}

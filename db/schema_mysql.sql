@@ -3,10 +3,11 @@
 --            mysql -u root -p wms < db/schema_mysql.sql
 
 CREATE TABLE IF NOT EXISTS USER (
-    user_id    BIGINT       NOT NULL AUTO_INCREMENT,
-    name       VARCHAR(255) NOT NULL UNIQUE,
-    tier       VARCHAR(16)  NOT NULL DEFAULT 'FREE',
-    created_at DOUBLE,
+    user_id       BIGINT       NOT NULL AUTO_INCREMENT,
+    name          VARCHAR(255) NOT NULL UNIQUE,
+    tier          VARCHAR(16)  NOT NULL DEFAULT 'FREE',
+    password_hash VARCHAR(255),                       -- NULL = seeded (cannot log in)
+    created_at    DOUBLE,
     PRIMARY KEY (user_id)
 ) ENGINE=InnoDB;
 

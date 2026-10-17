@@ -72,23 +72,41 @@ class Database:
                 for stmt in [s for s in sql.split(";") if s.strip()]:
                     cur.execute(stmt)
                 cur.close()
+            self._ensure_password_column(conn)
             conn.commit()
         finally:
             self.put_conn(conn)
 
+    def _ensure_password_column(self, conn) -> None:
+        """Idempotently add USER.password_hash to databases created before auth
+        was introduced (CREATE TABLE IF NOT EXISTS won't alter an existing one)."""
+        if self.backend == "sqlite":
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(USER)").fetchall()]
+            if "password_hash" not in cols:
+                conn.execute("ALTER TABLE USER ADD COLUMN password_hash TEXT")
+        else:
+            try:
+                cur = conn.cursor()
+                cur.execute("ALTER TABLE USER ADD COLUMN password_hash VARCHAR(255)")
+                cur.close()
+            except Exception:
+                pass  # column already exists
+
     # ---- USER writes -----------------------------------------------------
     def list_users(self) -> List[dict]:
         return [dict(r) for r in self._query(
-            "SELECT user_id, name, tier FROM USER")]
+            "SELECT user_id, name, tier, password_hash FROM USER")]
 
-    def insert_user(self, name: str, tier: str, created_at: float) -> int:
+    def insert_user(self, name: str, tier: str, created_at: float,
+                    password_hash: Optional[str] = None) -> int:
         with self._write_lock:
             conn = self.get_conn()
             try:
                 cur = conn.cursor()
                 cur.execute(self._q(
-                    "INSERT INTO USER (name, tier, created_at) VALUES (?, ?, ?)"),
-                    (name, tier, created_at))
+                    "INSERT INTO USER (name, tier, password_hash, created_at) "
+                    "VALUES (?, ?, ?, ?)"),
+                    (name, tier, password_hash, created_at))
                 user_id = cur.lastrowid
                 conn.commit()
                 return user_id

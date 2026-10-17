@@ -70,3 +70,9 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # Number of tracks each generated playlist contains.
 PLAYLIST_SIZE = int(os.environ.get("WMS_PLAYLIST_SIZE", "10"))
+
+# --- Web sessions -----------------------------------------------------------
+# Secret used to sign the Flask session cookie that keeps a user logged in.
+# Override with WMS_SECRET_KEY in production; the default is fine for the local
+# zero-setup demo.
+SECRET_KEY = os.environ.get("WMS_SECRET_KEY", "wms-dev-secret-change-me")

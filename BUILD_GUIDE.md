@@ -14,7 +14,10 @@ python run.py          # http://127.0.0.1:5000
 python benchmark.py    # headless 4-scheduler comparison
 ```
 
-No accounts, API keys, or Spotify Premium required — SQLite + mock providers.
+No API keys or Spotify Premium required — SQLite + mock providers. The web app
+does require a (local) account: on first visit you'll be sent to **/login**;
+click **Sign up** to create one and pick your tier. `benchmark.py` still needs no
+accounts — it seeds its own users headlessly.
 
 ---
 
@@ -49,6 +52,42 @@ No accounts, API keys, or Spotify Premium required — SQLite + mock providers.
 
 ---
 
+## Accounts & login (the web app)
+
+Every page of the web app is gated behind a login (Flask session cookie signed
+with `config.SECRET_KEY` / `WMS_SECRET_KEY`):
+
+- **Sign up** (`/signup`) creates a `USER` row with a tier and a salted password
+  hash, then logs you in. **Log in** (`/login`) / **Log out** (`/logout`) manage
+  the session. A `login_required` decorator protects the dashboard, analytics,
+  submit, demo, benchmark, playlist, export, and the `/api/*` endpoints.
+- A job's **owner and tier come from the logged-in account**, not from form
+  input — so the person submitting is the person who is scheduled.
+- Passwords use **PBKDF2-HMAC-SHA256** with a per-user random salt
+  (`wms/auth.py`, standard library only — no new dependencies). Hashes live in
+  `USER.password_hash`, stored as `algo$iterations$salt$digest`.
+- The fairness demo and `benchmark.py` seed **passwordless** users via
+  `Users.get_or_create` (they own jobs but can't log in) — so the experiments
+  still run with zero setup.
+
+---
+
+## Live dashboard (auto-update)
+
+Both the dashboard and the analytics page refresh themselves with no reload:
+
+- **Dashboard** polls `/api/jobs` every 1s, so jobs visibly move
+  NEW → QUEUED → RUNNING → TERMINATED in real time.
+- **Analytics** polls `/api/analytics` every 2s and re-renders the
+  per-scheduler, per-tier, and per-user tables as jobs finish or a benchmark
+  runs in the background (the server-rendered tables are the initial / no-JS
+  fallback).
+- Both pages show a `● live · updated Xs ago` indicator that ticks every second
+  and resets on each successful fetch, so stale data (e.g. a dropped connection)
+  is obvious.
+
+---
+
 ## The experiments
 
 `benchmark.py` runs two experiments (results also feed the web **/analytics**
@@ -76,7 +115,9 @@ Because all jobs are enqueued before the single worker starts, they effectively
 
 Six normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
 `PLAYLIST_TRACK` (`db/schema_sqlite.sql`). `JOB` and `JOB_EXECUTION` carry
-`user_id` + `tier` so the fairness analytics can group by user and tier.
+`user_id` + `tier` so the fairness analytics can group by user and tier. `USER`
+also holds `password_hash` for login; `Database.init_schema` migrates older
+databases by adding the column if it's missing.
 
 Switch to MySQL for submission:
 
@@ -119,8 +160,14 @@ downloads the playlist.
 ## Testing checklist
 
 - [ ] `python benchmark.py` prints the classic table **and** the fairness tables
-- [ ] `python run.py` serves the dashboard; submitting a request shows a job move
-      NEW → QUEUED → RUNNING → TERMINATED and a playlist appear
+- [ ] `python run.py` redirects to **/login**; **Sign up** creates an account and
+      logs in; **Log out** returns to the login page
+- [ ] Visiting any page while logged out redirects to login; a wrong password is
+      rejected
+- [ ] Submitting a request shows a job move NEW → QUEUED → RUNNING → TERMINATED
+      and a playlist appear, owned by the logged-in account
+- [ ] The dashboard and `/analytics` update live (no reload) with a
+      `● live · updated Xs ago` indicator
 - [ ] **Run fairness demo** under FCFS vs WFQ shows PREMIUM served faster under WFQ
 - [ ] `/analytics` shows per-scheduler, per-tier, and per-user tables
 - [ ] A playlist opens at `/playlist/<id>` and exports via `/export/<id>.m3u`

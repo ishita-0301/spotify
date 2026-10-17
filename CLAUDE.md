@@ -43,7 +43,8 @@ db/schema_*.sql         relational schema (sqlite + mysql dialects)
 .env / .env.example     real provider credentials (gitignored)
 wms/
   models.py             Job (+ user_id/tier) + lifecycle + metrics
-  users.py              users, tiers, weights (multi-tenant fair scheduling)
+  auth.py               stdlib PBKDF2 password hashing (hash/verify)
+  users.py              users, tiers, weights, register/authenticate
   schedulers.py         FCFS, SJF, Priority, RoundRobin, FairShare, WFQ
   job_queue.py          thread-safe ready queue
   resource_manager.py   worker slots, DB pool, API rate limiter
@@ -77,6 +78,10 @@ wms/
 - Metrics are computed from timestamps on the `Job` (see `models.py`) — waiting
   time must remain correct across Round Robin re-queues.
 - Default to 1 worker so scheduling order is observable; don't hardcode more.
+- The web app gates every page behind login (Flask session). A job's owner/tier
+  come from the logged-in account, not form input. Passwords are salted PBKDF2
+  hashes in `USER.password_hash` (stdlib only — no new deps). The demo/benchmark
+  still seed passwordless users via `Users.get_or_create` (they can't log in).
 
 ## Commands
 

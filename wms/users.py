@@ -10,6 +10,8 @@ from __future__ import annotations
 import threading
 import time
 
+from . import auth
+
 
 class Tier:
     FREE = "FREE"
@@ -45,6 +47,8 @@ class Users:
         self._by_name[u["name"]] = u
 
     def get_or_create(self, name: str, tier: str = Tier.FREE) -> dict:
+        """Fetch (or seed) a passwordless user. Used by the fairness demo and
+        benchmark to populate owners without going through signup."""
         name = (name or "guest").strip() or "guest"
         if tier not in Tier.ALL:
             tier = Tier.FREE
@@ -57,9 +61,41 @@ class Users:
                     existing["tier"] = tier
                 return existing
             user_id = self.db.insert_user(name, tier, time.time() * 1000.0)
-            u = {"user_id": user_id, "name": name, "tier": tier}
+            u = {"user_id": user_id, "name": name, "tier": tier,
+                 "password_hash": None}
             self._cache(u)
             return u
+
+    def register(self, name: str, password: str, tier: str = Tier.FREE) -> dict:
+        """Create a new login account. Raises ValueError if the inputs are
+        invalid or the name is already taken."""
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Please choose a username.")
+        if not password:
+            raise ValueError("Please choose a password.")
+        if tier not in Tier.ALL:
+            tier = Tier.FREE
+        with self._lock:
+            if self._by_name.get(name):
+                raise ValueError("That username is already taken.")
+            password_hash = auth.hash_password(password)
+            user_id = self.db.insert_user(
+                name, tier, time.time() * 1000.0, password_hash=password_hash)
+            u = {"user_id": user_id, "name": name, "tier": tier,
+                 "password_hash": password_hash}
+            self._cache(u)
+            return u
+
+    def authenticate(self, name: str, password: str) -> dict | None:
+        """Return the user dict on a correct password, else None."""
+        u = self._by_name.get((name or "").strip())
+        if u and auth.verify_password(password, u.get("password_hash")):
+            return u
+        return None
+
+    def by_id(self, user_id: int) -> dict | None:
+        return self._by_id.get(user_id)
 
     def tier_of(self, user_id: int) -> str:
         u = self._by_id.get(user_id)
