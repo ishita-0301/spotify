@@ -64,6 +64,25 @@ PROVIDER_MODE = os.environ.get("WMS_PROVIDERS", "auto")
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
+# --- Spotify OAuth login (optional, supplemental) ---------------------------
+# Authorization-code flow that lets a user sign in with their Spotify account
+# instead of a local password. This is separate from catalog search: the
+# login + profile endpoints work for any registered account (no Premium), so
+# it is a real alternative login path. It is entirely OPTIONAL — when the
+# client id/secret are absent the "Log in with Spotify" button is simply
+# hidden and the app keeps running fully offline (see CLAUDE.md).
+# By default it reuses the same Spotify app credentials used for search.
+SPOTIFY_OAUTH_CLIENT_ID = os.environ.get(
+    "SPOTIFY_OAUTH_CLIENT_ID", SPOTIFY_CLIENT_ID)
+SPOTIFY_OAUTH_CLIENT_SECRET = os.environ.get(
+    "SPOTIFY_OAUTH_CLIENT_SECRET", SPOTIFY_CLIENT_SECRET)
+# Must exactly match a Redirect URI registered on the Spotify app dashboard.
+SPOTIFY_OAUTH_REDIRECT_URI = os.environ.get(
+    "SPOTIFY_OAUTH_REDIRECT_URI", "http://127.0.0.1:5000/auth/spotify/callback")
+# Minimal scopes needed to read the signed-in user's id / name / email / tier.
+SPOTIFY_OAUTH_SCOPES = os.environ.get(
+    "SPOTIFY_OAUTH_SCOPES", "user-read-email user-read-private")
+
 # Real Gemini — needs a (free) API key from https://aistudio.google.com/apikey
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
@@ -76,6 +95,12 @@ PLAYLIST_SIZE = int(os.environ.get("WMS_PLAYLIST_SIZE", "10"))
 # preview tracks each recommendation card shows.
 RECOMMENDATION_COUNT = int(os.environ.get("WMS_REC_COUNT", "3"))
 RECOMMENDATION_PREVIEW = int(os.environ.get("WMS_REC_PREVIEW", "5"))
+
+# --- Genre-based opt-in suggestions -----------------------------------------
+# After a playlist is generated we offer this many extra genre-matched tracks
+# for the user to APPEND on confirmation. The playlist is never mutated until
+# the user explicitly says "Yes" (see engine._offer_genre_suggestions).
+GENRE_SUGGESTION_COUNT = int(os.environ.get("WMS_GENRE_SUGGESTIONS", "5"))
 
 # --- Web sessions -----------------------------------------------------------
 # Secret used to sign the Flask session cookie that keeps a user logged in.

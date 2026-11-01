@@ -49,6 +49,10 @@ accounts — it seeds its own users headlessly.
    back on any error.
 7. **Terminate + log.** State → `TERMINATED`; a `JOB_EXECUTION` row records the
    waiting / turnaround / response times for this run's scheduler.
+8. **Offer (opt-in).** After the playlist is saved, the engine generates extra
+   genre-matched tracks and stores them as a PENDING `PLAYLIST_SUGGESTION` — the
+   saved playlist is **not** mutated. The user later confirms Yes/No (see
+   *Genre opt-in suggestions* below).
 
 ---
 
@@ -69,6 +73,21 @@ with `config.SECRET_KEY` / `WMS_SECRET_KEY`):
 - The fairness demo and `benchmark.py` seed **passwordless** users via
   `Users.get_or_create` (they own jobs but can't log in) — so the experiments
   still run with zero setup.
+
+**Spotify OAuth login (optional, supplemental).** When the `SPOTIFY_OAUTH_*`
+credentials are configured, the login/signup pages show a **Log in with
+Spotify** button (`wms/spotify_oauth.py`, authorization-code flow):
+
+- `/auth/spotify/login` sends the user to Spotify's consent screen with an
+  anti-CSRF `state`; `/auth/spotify/callback` verifies the state, exchanges the
+  code for a token, and reads `GET /v1/me`.
+- `Users.get_or_create_spotify` maps that profile onto the `USER` schema — linked
+  by `spotify_id`, a unique username from the display name, `email` stored — and
+  `tier_for_spotify_product` sets the tier (**Spotify Premium → PREMIUM**, else
+  FREE), so a Spotify sign-in slots straight into WFQ fair scheduling.
+- This is a real alternative login path, not a workaround for the search 403:
+  the OAuth + profile endpoints work for any account. With no credentials the
+  button is hidden and everything still runs offline.
 
 ---
 
@@ -120,6 +139,31 @@ playlist suggestions** — no manual request needed (`wms/recommender.py`):
 
 ---
 
+## Genre opt-in suggestions (confirm before append)
+
+A generated playlist is never silently mutated. After `save_result`, the engine
+`_offer_genre_suggestions` searches for extra **genre-matched** tracks (through
+the shared rate-limited API slot), drops any already in the playlist, and stores
+the rest as a PENDING `PLAYLIST_SUGGESTION` — best-effort, so a failure here
+never fails the job. The playlist stays exactly as generated until the user
+decides:
+
+- `GET /api/playlist/<job_id>/suggestions` returns the pending offer (ownership
+  checked); the `/playlist/<id>` page renders it as an **"Add more … tracks?"**
+  panel listing the candidate songs.
+- `POST /api/suggestions/<id>/confirm` with `decision=yes` runs
+  `Database.accept_playlist_suggestion` — a single **ACID transaction** that
+  appends the `TRACK` + `PLAYLIST_TRACK` rows (continuing the existing positions)
+  and flips the suggestion to ACCEPTED. `decision=no` marks it REJECTED and
+  leaves the playlist untouched. Ownership (404) and already-decided (409) are
+  guarded, and every write goes through the existing `_write_lock` + pool.
+
+With the mock Spotify provider the search is seeded by query+genres, so the first
+`PLAYLIST_SIZE` results match the saved playlist and are filtered out — the
+offered extras are genuinely new, so the opt-in flow demos offline with no keys.
+
+---
+
 ## The experiments
 
 `benchmark.py` runs two experiments (results also feed the web **/analytics**
@@ -145,14 +189,17 @@ Because all jobs are enqueued before the single worker starts, they effectively
 
 ## Database
 
-Seven normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
-`PLAYLIST_TRACK`, and `RECOMMENDATION` (`db/schema_sqlite.sql`). `JOB` and
-`JOB_EXECUTION` carry `user_id` + `tier` so the fairness analytics can group by
-user and tier. `USER` also holds `password_hash` for login; `Database.init_schema`
-migrates older databases by adding the column if it's missing. `RECOMMENDATION`
-holds each AI suggestion's status (PENDING / ACCEPTED / REJECTED), its preview
-tracks (as JSON) and a link to the saved `playlist_id` once accepted — new
-databases pick it up via `CREATE TABLE IF NOT EXISTS`, so no migration is needed.
+Eight normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
+`PLAYLIST_TRACK`, `RECOMMENDATION`, and `PLAYLIST_SUGGESTION`
+(`db/schema_sqlite.sql`). `JOB` and `JOB_EXECUTION` carry `user_id` + `tier` so
+the fairness analytics can group by user and tier. `USER` holds `password_hash`
+for login plus `spotify_id` / `email` for Spotify OAuth sign-ins;
+`Database.init_schema` migrates older databases by adding any missing columns.
+`RECOMMENDATION` holds each AI suggestion's status (PENDING / ACCEPTED /
+REJECTED), its preview tracks (as JSON) and a link to the saved `playlist_id`
+once accepted. `PLAYLIST_SUGGESTION` holds the genre-matched tracks offered for
+opt-in append (same status set, candidate tracks as JSON). New databases pick
+the tables up via `CREATE TABLE IF NOT EXISTS`, so no migration is needed.
 
 Switch to MySQL for submission:
 
@@ -177,6 +224,10 @@ Both real providers are already implemented behind `wms/providers/`; put keys in
   the Web API with 403 unless the **app owner's account has Premium**; until then
   the provider auto-falls-back to mock. The integration is done — it starts
   returning real tracks the moment the owner is Premium.
+- **Spotify login:** set the `SPOTIFY_OAUTH_*` vars (they default to the client
+  id/secret above) and register the redirect URI on the Spotify dashboard to
+  enable the **Log in with Spotify** button. The login + profile endpoints work
+  for any account — no Premium required (see *Accounts & login* above).
 
 **Export:** `/playlist/<job_id>` is a shareable page and `/export/<job_id>.m3u`
 downloads the playlist.
@@ -191,6 +242,8 @@ downloads the playlist.
 - `WMS_DB_BACKEND` — `sqlite` (default) or `mysql`.
 - `WMS_REC_COUNT` — PENDING recommendations kept in front of each user (default 3).
 - `WMS_REC_PREVIEW` — preview tracks shown per recommendation (default 5).
+- `WMS_GENRE_SUGGESTIONS` — genre-matched tracks offered for opt-in append (default 5).
+- `SPOTIFY_OAUTH_*` — enable the optional "Log in with Spotify" button.
 
 ---
 
@@ -213,4 +266,9 @@ downloads the playlist.
 - [ ] **Accept** saves the playlist (it appears in the jobs table and at
       `/playlist/<id>`); **Reject** dismisses it and it never reappears, even after
       **Refresh**; another user can't accept/reject yours
+- [ ] On `/playlist/<id>` the **"Add more … tracks?"** panel lists genre-matched
+      songs not yet in the playlist; **Yes** appends them (playlist grows), **No**
+      leaves it unchanged; a decided suggestion can't be re-decided (409)
+- [ ] With `SPOTIFY_OAUTH_*` set, **Log in with Spotify** signs in and maps the
+      account (Premium → PREMIUM tier); with them unset, no button is shown
 - [ ] Runs with no API keys and no internet (mock fallback)

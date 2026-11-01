@@ -119,7 +119,31 @@ class Engine:
         title = f"{job.request_text.strip()[:40]}"
         job.playlist_id = self.db.save_result(job, title=title, tracks=tracks)
         self.db.insert_execution(job)
+        # Offer (but do NOT auto-apply) extra genre-matched tracks.
+        self._offer_genre_suggestions(job, attrs, tracks)
         self._finish_active()
+
+    def _offer_genre_suggestions(self, job: Job, attrs: dict,
+                                 existing: List[dict]) -> None:
+        """Generate genre-matched extra tracks for an *opt-in* append, WITHOUT
+        mutating the saved playlist. They are stored as a PENDING
+        PLAYLIST_SUGGESTION the user can later confirm ("Yes" appends them,
+        "No" keeps the playlist exactly as generated). Best-effort: any failure
+        here must never fail the job itself."""
+        genres = attrs.get("genres") or []
+        want = config.GENRE_SUGGESTION_COUNT
+        if not genres or want <= 0:
+            return
+        try:
+            self.rm.api_call()           # respect the shared API rate limit
+            pool = spotify.search(attrs, n=config.PLAYLIST_SIZE + want)
+            have = {(t["name"], t["artist"]) for t in existing}
+            extra = [t for t in pool if (t["name"], t["artist"]) not in have][:want]
+            if extra:
+                self.db.insert_playlist_suggestion(
+                    job.playlist_id, job.job_id, job.user_id, genres, extra)
+        except Exception as exc:
+            print(f"[engine] genre suggestion generation failed: {exc}")
 
     def _finish_active(self) -> None:
         with self._idle_cv:

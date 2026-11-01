@@ -39,6 +39,8 @@ you're in. `benchmark.py` seeds its own users and needs no login.
   MySQL.
 - **Multi-user auth** — every page gated behind login; salted PBKDF2 password
   hashes (standard library only). A job's owner/tier come from the account.
+  Optional **Spotify OAuth login** lets users sign in with their Spotify account
+  (Premium → PREMIUM tier, else FREE) when credentials are configured.
 - **Live dashboard** — jobs move NEW → QUEUED → RUNNING → TERMINATED in real
   time; `/analytics` shows fairness per scheduler / tier / user.
 - **✨ AI playlist recommendations** — on login the dashboard automatically
@@ -46,6 +48,9 @@ you're in. `benchmark.py` seeds its own users and needs no login.
   valence / favorite artists), each with a reason and a track preview. **Accept**
   (saved to your account), **Reject** (never shown again), or **Refresh** for
   more. Nothing is saved without your approval.
+- **Genre opt-in suggestions** — after a playlist is generated, extra
+  genre-matched tracks are *offered* (never auto-added); on `/playlist/<id>` you
+  confirm **Yes** (append) or **No** (keep the playlist exactly as generated).
 - **Export** — any playlist is shareable at `/playlist/<id>` and downloadable as
   `.m3u`.
 
@@ -61,7 +66,8 @@ db/schema_*.sql         relational schema (sqlite + mysql dialects)
 wms/
   models.py             Job + lifecycle + scheduling metrics
   auth.py               stdlib PBKDF2 password hashing
-  users.py              users, tiers, weights, register/authenticate
+  users.py              users, tiers, weights, register/authenticate (+ Spotify)
+  spotify_oauth.py      optional Spotify OAuth 2.0 login (authorization-code)
   recommender.py        AI playlist recommendations from a per-user taste profile
   schedulers.py         FCFS, SJF, Priority, RoundRobin, FairShare, WFQ
   job_queue.py          thread-safe ready queue
@@ -72,8 +78,8 @@ wms/
   web/                  Flask app + templates + static
 ```
 
-Seven normalized tables: `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
-`PLAYLIST_TRACK`, `RECOMMENDATION`.
+Eight normalized tables: `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
+`PLAYLIST_TRACK`, `RECOMMENDATION`, `PLAYLIST_SUGGESTION`.
 
 ---
 
@@ -91,12 +97,19 @@ Everything has a zero-setup default; override via environment variables (see
 | `WMS_PROVIDERS` | `auto` | `auto` / `mock` / `real` |
 | `WMS_REC_COUNT` | `3` | PENDING recommendations kept per user |
 | `WMS_REC_PREVIEW` | `5` | preview tracks per recommendation |
+| `WMS_GENRE_SUGGESTIONS` | `5` | genre-matched tracks offered for opt-in append |
 | `WMS_SECRET_KEY` | dev value | signs the session cookie — set for non-local use |
 
 **Real providers** (optional): put `GEMINI_API_KEY` (free) and/or
 `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` in a `.env` file. Spotify search is
 fully wired but the Web API returns 403 unless the app owner's account is
 Premium — the provider detects this once and falls back to mock for the session.
+
+**Spotify login** (optional): set the `SPOTIFY_OAUTH_*` variables (they default
+to the client id/secret above) and register the redirect URI on the Spotify
+dashboard to enable the "Log in with Spotify" button. Unlike search, the OAuth
+login + profile endpoints work for any account — no Premium required. Leave them
+blank and the button is simply hidden.
 
 **MySQL:**
 
@@ -116,7 +129,8 @@ $env:WMS_DB_BACKEND="mysql"; $env:WMS_MYSQL_PASSWORD="yourpassword"; python run.
   experiments, and how to extend it.
 - **`CLAUDE.md`** — project conventions and constraints.
 - **`Phase2.md`** — login & live dashboard notes. **`Phase3.md`** — AI
-  recommendations notes.
+  recommendations notes. **`Phase4.md`** — Spotify OAuth login & genre opt-in
+  suggestions notes.
 
 Grading weight: **OS 45%, DBMS 45%, AI 5%, UI 5%** — the schedulers and the
 relational/transaction layer are what matter most.

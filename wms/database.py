@@ -73,41 +73,52 @@ class Database:
                 for stmt in [s for s in sql.split(";") if s.strip()]:
                     cur.execute(stmt)
                 cur.close()
-            self._ensure_password_column(conn)
+            self._ensure_user_columns(conn)
             conn.commit()
         finally:
             self.put_conn(conn)
 
-    def _ensure_password_column(self, conn) -> None:
-        """Idempotently add USER.password_hash to databases created before auth
-        was introduced (CREATE TABLE IF NOT EXISTS won't alter an existing one)."""
+    def _ensure_user_columns(self, conn) -> None:
+        """Idempotently add USER columns to databases created before a feature
+        was introduced (CREATE TABLE IF NOT EXISTS won't alter an existing one):
+        password_hash (auth) and spotify_id / email (Spotify OAuth login)."""
+        want = {
+            "password_hash": ("TEXT", "VARCHAR(255)"),
+            "spotify_id":    ("TEXT", "VARCHAR(255)"),
+            "email":         ("TEXT", "VARCHAR(255)"),
+        }
         if self.backend == "sqlite":
             cols = [r[1] for r in conn.execute("PRAGMA table_info(USER)").fetchall()]
-            if "password_hash" not in cols:
-                conn.execute("ALTER TABLE USER ADD COLUMN password_hash TEXT")
+            for name, (sqlite_type, _) in want.items():
+                if name not in cols:
+                    conn.execute(f"ALTER TABLE USER ADD COLUMN {name} {sqlite_type}")
         else:
-            try:
-                cur = conn.cursor()
-                cur.execute("ALTER TABLE USER ADD COLUMN password_hash VARCHAR(255)")
-                cur.close()
-            except Exception:
-                pass  # column already exists
+            for name, (_, mysql_type) in want.items():
+                try:
+                    cur = conn.cursor()
+                    cur.execute(f"ALTER TABLE USER ADD COLUMN {name} {mysql_type}")
+                    cur.close()
+                except Exception:
+                    pass  # column already exists
 
     # ---- USER writes -----------------------------------------------------
     def list_users(self) -> List[dict]:
         return [dict(r) for r in self._query(
-            "SELECT user_id, name, tier, password_hash FROM USER")]
+            "SELECT user_id, name, tier, password_hash, spotify_id, email "
+            "FROM USER")]
 
     def insert_user(self, name: str, tier: str, created_at: float,
-                    password_hash: Optional[str] = None) -> int:
+                    password_hash: Optional[str] = None,
+                    spotify_id: Optional[str] = None,
+                    email: Optional[str] = None) -> int:
         with self._write_lock:
             conn = self.get_conn()
             try:
                 cur = conn.cursor()
                 cur.execute(self._q(
-                    "INSERT INTO USER (name, tier, password_hash, created_at) "
-                    "VALUES (?, ?, ?, ?)"),
-                    (name, tier, password_hash, created_at))
+                    "INSERT INTO USER (name, tier, password_hash, spotify_id, "
+                    "email, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
+                    (name, tier, password_hash, spotify_id, email, created_at))
                 user_id = cur.lastrowid
                 conn.commit()
                 return user_id
@@ -424,6 +435,99 @@ class Database:
                     (playlist_id, now, rec["rec_id"]))
                 conn.commit()
                 return {"playlist_id": playlist_id, "job_id": job_id}
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                self.put_conn(conn)
+
+    # ---- PLAYLIST_SUGGESTION (genre-based opt-in append) -----------------
+    _SUG_COLS = ("suggestion_id, playlist_id, job_id, user_id, genres, "
+                 "tracks_json, status, created_at, decided_at")
+
+    def insert_playlist_suggestion(self, playlist_id: int, job_id: int,
+                                   user_id: int, genres: List[str],
+                                   tracks: List[dict]) -> int:
+        """Record genre-matched extra tracks offered for the playlist, PENDING
+        the user's confirmation. The playlist itself is left untouched."""
+        sql = self._q(
+            "INSERT INTO PLAYLIST_SUGGESTION (playlist_id, job_id, user_id, "
+            "genres, tracks_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'PENDING', ?)"
+        )
+        params = (playlist_id, job_id, user_id, ",".join(genres or []),
+                  json.dumps(tracks), now_ms())
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, params)
+                suggestion_id = cur.lastrowid
+                conn.commit()
+                return suggestion_id
+            finally:
+                self.put_conn(conn)
+
+    def get_playlist_suggestion(self, suggestion_id: int) -> Optional[dict]:
+        rows = self._query(
+            f"SELECT {self._SUG_COLS} FROM PLAYLIST_SUGGESTION "
+            "WHERE suggestion_id=?", (suggestion_id,))
+        return dict(rows[0]) if rows else None
+
+    def pending_suggestion_for_playlist(self, playlist_id: int) -> Optional[dict]:
+        rows = self._query(
+            f"SELECT {self._SUG_COLS} FROM PLAYLIST_SUGGESTION "
+            "WHERE playlist_id=? AND status='PENDING' "
+            "ORDER BY suggestion_id DESC LIMIT 1", (playlist_id,))
+        return dict(rows[0]) if rows else None
+
+    def reject_playlist_suggestion(self, suggestion_id: int) -> None:
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                self._exec(conn, self._q(
+                    "UPDATE PLAYLIST_SUGGESTION SET status='REJECTED', "
+                    "decided_at=? WHERE suggestion_id=? AND status='PENDING'"),
+                    (now_ms(), suggestion_id))
+                conn.commit()
+            finally:
+                self.put_conn(conn)
+
+    def accept_playlist_suggestion(self, sug: dict) -> dict:
+        """Atomically APPEND the suggested tracks to their playlist.
+
+        One transaction inserts the TRACK rows, the PLAYLIST_TRACK join rows
+        (continuing the existing positions), and flips the suggestion to
+        ACCEPTED — all-or-nothing, so the playlist is never left half-extended.
+        """
+        tracks = json.loads(sug["tracks_json"])
+        playlist_id = sug["playlist_id"]
+        now = now_ms()
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(self._q(
+                    "SELECT COALESCE(MAX(position), 0) FROM PLAYLIST_TRACK "
+                    "WHERE playlist_id=?"), (playlist_id,))
+                start = int((cur.fetchone() or [0])[0] or 0)
+                for offset, t in enumerate(tracks, start=1):
+                    cur.execute(self._q(
+                        "INSERT INTO TRACK (name, artist, spotify_url, tempo, "
+                        "valence, energy) VALUES (?, ?, ?, ?, ?, ?)"),
+                        (t["name"], t["artist"], t.get("spotify_url"),
+                         t.get("tempo"), t.get("valence"), t.get("energy")))
+                    track_id = cur.lastrowid
+                    cur.execute(self._q(
+                        "INSERT INTO PLAYLIST_TRACK (playlist_id, track_id, "
+                        "position) VALUES (?, ?, ?)"),
+                        (playlist_id, track_id, start + offset))
+                cur.execute(self._q(
+                    "UPDATE PLAYLIST_SUGGESTION SET status='ACCEPTED', "
+                    "decided_at=? WHERE suggestion_id=?"),
+                    (now, sug["suggestion_id"]))
+                conn.commit()
+                return {"playlist_id": playlist_id, "appended": len(tracks)}
             except Exception:
                 conn.rollback()
                 raise

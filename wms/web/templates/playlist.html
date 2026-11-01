@@ -22,4 +22,70 @@
   {% endif %}
   <p><a href="{{ url_for('index') }}">← back to dashboard</a></p>
 </section>
+
+{% if pl %}
+<!-- Genre-based opt-in: extra matching tracks are offered, not auto-added. -->
+<section class="panel" id="suggest-panel" hidden>
+  <div class="row spread">
+    <h3>Add more <span id="suggest-genres" class="muted"></span> tracks?</h3>
+  </div>
+  <p class="muted">These genre-matched songs are <em>not</em> in your playlist
+    yet. Append them, or keep the playlist exactly as generated.</p>
+  <ol id="suggest-tracks"></ol>
+  <div class="row">
+    <button type="button" id="suggest-yes">Yes, append them</button>
+    <button type="button" id="suggest-no" class="ghost">No, keep as is</button>
+  </div>
+  <p class="muted" id="suggest-status" hidden></p>
+</section>
+
+<script>
+(function () {
+  const jobId = {{ job_id }};
+  const panel = document.getElementById("suggest-panel");
+  const status = document.getElementById("suggest-status");
+  let suggestionId = null;
+
+  fetch(`/api/playlist/${jobId}/suggestions`)
+    .then(r => r.json())
+    .then(data => {
+      const s = data.suggestion;
+      if (!s || !s.tracks.length) return;
+      suggestionId = s.suggestion_id;
+      document.getElementById("suggest-genres").textContent =
+        s.genres.length ? `(${s.genres.join(", ")})` : "";
+      const ol = document.getElementById("suggest-tracks");
+      s.tracks.forEach(t => {
+        const li = document.createElement("li");
+        li.textContent = `${t.name} — ${t.artist}`;
+        ol.appendChild(li);
+      });
+      panel.hidden = false;
+    })
+    .catch(() => {});
+
+  function decide(decision) {
+    if (suggestionId === null) return;
+    const body = new URLSearchParams({ decision });
+    fetch(`/api/suggestions/${suggestionId}/confirm`, { method: "POST", body })
+      .then(r => r.json())
+      .then(res => {
+        document.getElementById("suggest-yes").disabled = true;
+        document.getElementById("suggest-no").disabled = true;
+        status.hidden = false;
+        if (res.decision === "accepted") {
+          status.textContent = `Appended ${res.appended} tracks. Reloading…`;
+          setTimeout(() => window.location.reload(), 700);
+        } else {
+          status.textContent = "Kept your playlist unchanged.";
+        }
+      })
+      .catch(() => { status.hidden = false; status.textContent = "Something went wrong."; });
+  }
+
+  document.getElementById("suggest-yes").addEventListener("click", () => decide("yes"));
+  document.getElementById("suggest-no").addEventListener("click", () => decide("no"));
+})();
+</script>
+{% endif %}
 {% endblock %}

@@ -6,9 +6,12 @@ CREATE TABLE IF NOT EXISTS USER (
     user_id       BIGINT       NOT NULL AUTO_INCREMENT,
     name          VARCHAR(255) NOT NULL UNIQUE,
     tier          VARCHAR(16)  NOT NULL DEFAULT 'FREE',
-    password_hash VARCHAR(255),                       -- NULL = seeded (cannot log in)
+    password_hash VARCHAR(255),                       -- NULL = seeded / Spotify-only login
+    spotify_id    VARCHAR(255),                       -- set when signed in via Spotify OAuth
+    email         VARCHAR(255),                       -- optional, from the Spotify profile
     created_at    DOUBLE,
-    PRIMARY KEY (user_id)
+    PRIMARY KEY (user_id),
+    KEY idx_user_spotify (spotify_id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS JOB (
@@ -75,6 +78,26 @@ CREATE TABLE IF NOT EXISTS PLAYLIST_TRACK (
     PRIMARY KEY (playlist_id, track_id),
     FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id),
     FOREIGN KEY (track_id)    REFERENCES TRACK(track_id)
+) ENGINE=InnoDB;
+
+-- Genre-matched extra tracks offered after a playlist is generated. The
+-- playlist is NOT mutated until the user confirms ("Yes" -> append the tracks,
+-- "No" -> keep the playlist as originally generated).
+CREATE TABLE IF NOT EXISTS PLAYLIST_SUGGESTION (
+    suggestion_id BIGINT       NOT NULL AUTO_INCREMENT,
+    playlist_id   BIGINT       NOT NULL,
+    job_id        BIGINT       NOT NULL,
+    user_id       BIGINT       NOT NULL,
+    genres        VARCHAR(255),
+    tracks_json   TEXT         NOT NULL,
+    status        VARCHAR(16)  NOT NULL DEFAULT 'PENDING',  -- PENDING | ACCEPTED | REJECTED
+    created_at    DOUBLE,
+    decided_at    DOUBLE,
+    PRIMARY KEY (suggestion_id),
+    KEY idx_sug_playlist (playlist_id, status),
+    FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id),
+    FOREIGN KEY (job_id)      REFERENCES JOB(job_id),
+    FOREIGN KEY (user_id)     REFERENCES USER(user_id)
 ) ENGINE=InnoDB;
 
 -- AI-generated playlist recommendations awaiting the user's accept/reject.

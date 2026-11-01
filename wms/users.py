@@ -31,6 +31,12 @@ def weight_for_tier(tier: str) -> float:
     return TIER_WEIGHT.get(tier, 1.0)
 
 
+def tier_for_spotify_product(product: str) -> str:
+    """Map a Spotify account's product to our service tier: a Spotify Premium
+    subscriber becomes a PREMIUM (weight 3.0) user, everyone else FREE."""
+    return Tier.PREMIUM if (product or "").lower() == "premium" else Tier.FREE
+
+
 class Users:
     """Small registry backed by the USER table, cached in memory."""
 
@@ -38,6 +44,7 @@ class Users:
         self.db = database
         self._by_id: dict[int, dict] = {}
         self._by_name: dict[str, dict] = {}
+        self._by_spotify: dict[str, dict] = {}
         self._lock = threading.Lock()
         for u in self.db.list_users():
             self._cache(u)
@@ -45,6 +52,9 @@ class Users:
     def _cache(self, u: dict) -> None:
         self._by_id[u["user_id"]] = u
         self._by_name[u["name"]] = u
+        sid = u.get("spotify_id")
+        if sid:
+            self._by_spotify[sid] = u
 
     def get_or_create(self, name: str, tier: str = Tier.FREE) -> dict:
         """Fetch (or seed) a passwordless user. Used by the fairness demo and
@@ -86,6 +96,44 @@ class Users:
                  "password_hash": password_hash}
             self._cache(u)
             return u
+
+    def get_or_create_spotify(self, spotify_id: str, display_name: str,
+                              email: str | None = None,
+                              tier: str = Tier.FREE) -> dict:
+        """Find (by Spotify id) or create the local account for a user who
+        signed in with Spotify. The Spotify profile maps onto our USER schema:
+        spotify_id links the account, display_name seeds a unique username, and
+        the Spotify Premium/Free product decides the service tier."""
+        if not spotify_id:
+            raise ValueError("Spotify did not return a profile id.")
+        if tier not in Tier.ALL:
+            tier = Tier.FREE
+        with self._lock:
+            existing = self._by_spotify.get(spotify_id)
+            if existing:
+                # Keep the tier in sync if their Spotify subscription changed.
+                if existing["tier"] != tier:
+                    self.db.update_user_tier(existing["user_id"], tier)
+                    existing["tier"] = tier
+                return existing
+            name = self._unique_name_locked(display_name or f"spotify_{spotify_id}")
+            user_id = self.db.insert_user(
+                name, tier, time.time() * 1000.0,
+                spotify_id=spotify_id, email=email)
+            u = {"user_id": user_id, "name": name, "tier": tier,
+                 "password_hash": None, "spotify_id": spotify_id, "email": email}
+            self._cache(u)
+            return u
+
+    def _unique_name_locked(self, base: str) -> str:
+        """A display name not already taken (caller must hold ``self._lock``)."""
+        base = (base or "").strip() or "spotify_user"
+        name = base
+        i = 2
+        while name in self._by_name:
+            name = f"{base} ({i})"
+            i += 1
+        return name
 
     def authenticate(self, name: str, password: str) -> dict | None:
         """Return the user dict on a correct password, else None."""

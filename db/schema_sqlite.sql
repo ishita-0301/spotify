@@ -5,9 +5,13 @@ CREATE TABLE IF NOT EXISTS USER (
     user_id       INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL UNIQUE,
     tier          TEXT NOT NULL DEFAULT 'FREE',   -- FREE | PREMIUM
-    password_hash TEXT,                           -- NULL = seeded (cannot log in)
+    password_hash TEXT,                           -- NULL = seeded / Spotify-only login
+    spotify_id    TEXT,                           -- set when the account signed in via Spotify OAuth
+    email         TEXT,                           -- optional, from the Spotify profile
     created_at    REAL
 );
+
+CREATE INDEX IF NOT EXISTS idx_user_spotify ON USER(spotify_id);
 
 CREATE TABLE IF NOT EXISTS JOB (
     job_id        INTEGER PRIMARY KEY,
@@ -90,6 +94,27 @@ CREATE TABLE IF NOT EXISTS RECOMMENDATION (
     FOREIGN KEY (user_id)     REFERENCES USER(user_id),
     FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id)
 );
+
+-- Genre-matched extra tracks offered after a playlist is generated. The
+-- playlist is NOT mutated until the user confirms ("Yes" -> append the tracks,
+-- "No" -> keep the playlist as originally generated). tracks_json holds the
+-- candidate tracks; on accept they are appended to PLAYLIST in one transaction.
+CREATE TABLE IF NOT EXISTS PLAYLIST_SUGGESTION (
+    suggestion_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    playlist_id   INTEGER NOT NULL,
+    job_id        INTEGER NOT NULL,
+    user_id       INTEGER NOT NULL,
+    genres        TEXT,                      -- comma-joined genres these match
+    tracks_json   TEXT    NOT NULL,          -- candidate tracks as JSON
+    status        TEXT    NOT NULL DEFAULT 'PENDING',  -- PENDING | ACCEPTED | REJECTED
+    created_at    REAL,
+    decided_at    REAL,
+    FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id),
+    FOREIGN KEY (job_id)      REFERENCES JOB(job_id),
+    FOREIGN KEY (user_id)     REFERENCES USER(user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sug_playlist ON PLAYLIST_SUGGESTION(playlist_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_exec_scheduler ON JOB_EXECUTION(scheduler);
 CREATE INDEX IF NOT EXISTS idx_exec_tier      ON JOB_EXECUTION(tier);

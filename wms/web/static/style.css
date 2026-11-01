@@ -61,6 +61,13 @@ th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: upp
 .tier-free { background: #1a2230; color: #9fb4d0; }
 button.ghost { background: transparent; color: var(--accent2); border: 1px solid var(--line); }
 button.ghost:hover { filter: none; border-color: var(--accent2); }
+a.button {
+  display: block; text-align: center; text-decoration: none;
+  border-radius: 8px; padding: 9px 12px; font-size: 14px; font-weight: 700;
+  background: var(--accent); color: #04120a;
+}
+a.button:hover { filter: brightness(1.08); }
+a.button.spotify { background: #1db954; color: #04120a; }
 a { color: var(--accent2); }
 .badge { border-radius: 6px; padding: 3px 9px; font-size: 12px; font-weight: 700; }
 .s-new    { background: #33384a; color: #cdd3e1; }

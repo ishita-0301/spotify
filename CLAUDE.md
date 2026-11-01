@@ -44,7 +44,8 @@ db/schema_*.sql         relational schema (sqlite + mysql dialects)
 wms/
   models.py             Job (+ user_id/tier) + lifecycle + metrics
   auth.py               stdlib PBKDF2 password hashing (hash/verify)
-  users.py              users, tiers, weights, register/authenticate
+  users.py              users, tiers, weights, register/authenticate (+ Spotify)
+  spotify_oauth.py      optional Spotify OAuth 2.0 login (authorization-code)
   recommender.py        AI playlist recommendations from a per-user taste profile
   schedulers.py         FCFS, SJF, Priority, RoundRobin, FairShare, WFQ
   job_queue.py          thread-safe ready queue
@@ -62,6 +63,10 @@ wms/
   Premium** — the provider detects this once and falls back to mock for the
   session. Do not try to "fix" the 403 in code; it's a Spotify account policy.
 - Keep everything runnable offline: mock fallback must always work.
+- Spotify **OAuth login** (`wms/spotify_oauth.py`) is a separate, optional path:
+  the authorize + `/v1/me` profile endpoints work for any account (not Premium
+  walled). It's gated behind `SPOTIFY_OAUTH_*` config — when unset the "Log in
+  with Spotify" button is hidden and the app still runs fully offline.
 
 ## Conventions
 
@@ -83,6 +88,11 @@ wms/
   come from the logged-in account, not form input. Passwords are salted PBKDF2
   hashes in `USER.password_hash` (stdlib only — no new deps). The demo/benchmark
   still seed passwordless users via `Users.get_or_create` (they can't log in).
+  Spotify sign-ins are linked by `USER.spotify_id` via
+  `Users.get_or_create_spotify`; Spotify Premium maps to the PREMIUM tier.
+- Genre-matched follow-on tracks are **offered, never auto-applied**: the engine
+  stores a PENDING `PLAYLIST_SUGGESTION` after `save_result` without mutating the
+  playlist; the user confirms, and accept appends inside one ACID transaction.
 
 ## Commands
 

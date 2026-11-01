@@ -15,11 +15,11 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 import config
-from wms import recommender
+from wms import recommender, spotify_oauth
 from wms.database import Database
 from wms.engine import Engine
 from wms.schedulers import build, ALL_SCHEDULERS
-from wms.users import Users, Tier
+from wms.users import Users, Tier, tier_for_spotify_product
 
 
 def _rec_payload(rec: dict) -> dict:
@@ -36,6 +36,22 @@ def _rec_payload(rec: dict) -> dict:
         "tempo": rec["tempo"],
         "valence": rec["valence"],
         "energy": rec["energy"],
+        "tracks": tracks,
+    }
+
+
+def _suggestion_payload(sug: dict) -> dict:
+    """Shape a PLAYLIST_SUGGESTION row for the opt-in UI (tracks parsed out)."""
+    try:
+        tracks = json.loads(sug["tracks_json"])
+    except (TypeError, ValueError):
+        tracks = []
+    return {
+        "suggestion_id": sug["suggestion_id"],
+        "playlist_id": sug["playlist_id"],
+        "job_id": sug["job_id"],
+        "genres": [g for g in (sug.get("genres") or "").split(",") if g],
+        "status": sug["status"],
         "tracks": tracks,
     }
 
@@ -81,10 +97,12 @@ def create_app() -> Flask:
             return view(*args, **kwargs)
         return wrapped
 
-    # Expose the logged-in user to every template (for the nav bar).
+    # Expose the logged-in user (and whether Spotify login is available) to
+    # every template, for the nav bar and the login/signup pages.
     @app.context_processor
     def inject_user():
-        return {"current_user": current_user()}
+        return {"current_user": current_user(),
+                "spotify_login_enabled": spotify_oauth.configured()}
 
     @app.route("/signup", methods=["GET", "POST"])
     def signup():
@@ -124,6 +142,49 @@ def create_app() -> Flask:
     def logout():
         session.pop("user_id", None)
         return redirect(url_for("login"))
+
+    # ---- Spotify OAuth login (optional, supplemental) -------------------
+    def _login_error(msg: str, code: int):
+        return render_template("login.html", error=msg, name="", next=""), code
+
+    @app.route("/auth/spotify/login")
+    def spotify_login():
+        """Kick off the Spotify authorization-code flow."""
+        if current_user():
+            return redirect(url_for("index"))
+        if not spotify_oauth.configured():
+            return _login_error(
+                "Spotify login is not configured on this server.", 503)
+        state = spotify_oauth.new_state()
+        session["spotify_oauth_state"] = state
+        return redirect(spotify_oauth.authorize_url(state))
+
+    @app.route("/auth/spotify/callback")
+    def spotify_callback():
+        """Handle Spotify's redirect: verify state, exchange the code, map the
+        profile onto a local account, and log the user in."""
+        if current_user():
+            return redirect(url_for("index"))
+        if request.args.get("error"):
+            return _login_error(
+                f"Spotify login was cancelled ({request.args['error']}).", 400)
+        expected = session.pop("spotify_oauth_state", None)
+        if not request.args.get("state") or request.args["state"] != expected:
+            return _login_error("Spotify login failed (state mismatch).", 400)
+        code = request.args.get("code")
+        if not code:
+            return _login_error("Spotify login failed (missing code).", 400)
+        try:
+            token = spotify_oauth.exchange_code(code)
+            profile = spotify_oauth.fetch_profile(token)
+        except Exception as exc:  # network / Spotify error — stay graceful
+            return _login_error(f"Spotify login failed ({exc}).", 502)
+        tier = tier_for_spotify_product(profile["product"])
+        user = users.get_or_create_spotify(
+            profile["spotify_id"], profile["display_name"],
+            profile.get("email"), tier)
+        session["user_id"] = user["user_id"]
+        return redirect(url_for("index"))
 
     # ---- pages ----------------------------------------------------------
     @app.route("/")
@@ -265,5 +326,45 @@ def create_app() -> Flask:
             return jsonify({"error": "not found"}), 404
         db.reject_recommendation(rec_id)
         return jsonify({"ok": True})
+
+    # ---- genre-based opt-in suggestions ---------------------------------
+    @app.route("/api/playlist/<int:job_id>/suggestions")
+    @login_required
+    def playlist_suggestions(job_id: int):
+        """Return the PENDING genre-matched tracks offered for this playlist (if
+        any), so the user can decide whether to append them. Nothing is applied
+        here — the playlist stays exactly as generated until a confirm."""
+        user = current_user()
+        pl = db.playlist_for_job(job_id)
+        if not pl:
+            return jsonify({"suggestion": None})
+        sug = db.pending_suggestion_for_playlist(pl["playlist_id"])
+        if not sug or sug["user_id"] != user["user_id"]:
+            return jsonify({"suggestion": None})
+        return jsonify({"suggestion": _suggestion_payload(sug)})
+
+    @app.route("/api/suggestions/<int:suggestion_id>/confirm", methods=["POST"])
+    @login_required
+    def confirm_suggestion(suggestion_id: int):
+        """Apply the user's decision on a genre suggestion. "Yes" appends the
+        tracks to the playlist (ACID); "No" keeps the playlist unchanged."""
+        user = current_user()
+        sug = db.get_playlist_suggestion(suggestion_id)
+        if not sug or sug["user_id"] != user["user_id"]:
+            return jsonify({"error": "not found"}), 404
+        if sug["status"] != "PENDING":
+            return jsonify({"error": "already decided"}), 409
+        decision = (request.form.get("decision")
+                    or request.args.get("decision") or "")
+        if not decision and request.is_json:
+            decision = (request.get_json(silent=True) or {}).get("decision", "")
+        decision = decision.strip().lower()
+        if decision in ("yes", "accept", "append", "true"):
+            result = db.accept_playlist_suggestion(sug)
+            return jsonify({"ok": True, "decision": "accepted", **result})
+        if decision in ("no", "reject", "keep", "false"):
+            db.reject_playlist_suggestion(suggestion_id)
+            return jsonify({"ok": True, "decision": "rejected"})
+        return jsonify({"error": "decision must be 'yes' or 'no'"}), 400
 
     return app

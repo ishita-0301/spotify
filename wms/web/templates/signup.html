@@ -18,6 +18,12 @@
     </label>
     <button type="submit">Sign up</button>
   </form>
+  {% if spotify_login_enabled %}
+  <p class="muted" style="text-align:center">or</p>
+  <a class="button spotify" href="{{ url_for('spotify_login') }}">Continue with Spotify</a>
+  <p class="muted">Signing in with Spotify maps your account automatically —
+    Spotify Premium becomes a PREMIUM tier, otherwise FREE.</p>
+  {% endif %}
   <p class="muted">Your tier sets your share of the API budget under the fair
     schedulers (PREMIUM is weighted ~3&times; higher under WFQ).</p>
   <p class="muted">Already have an account? <a href="{{ url_for('login') }}">Log in →</a></p>
