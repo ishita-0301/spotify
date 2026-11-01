@@ -76,3 +76,27 @@ CREATE TABLE IF NOT EXISTS PLAYLIST_TRACK (
     FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id),
     FOREIGN KEY (track_id)    REFERENCES TRACK(track_id)
 ) ENGINE=InnoDB;
+
+-- AI-generated playlist recommendations awaiting the user's accept/reject.
+-- tracks_json holds the previewed tracks; on accept they become a real PLAYLIST.
+CREATE TABLE IF NOT EXISTS RECOMMENDATION (
+    rec_id       BIGINT       NOT NULL AUTO_INCREMENT,
+    user_id      BIGINT       NOT NULL,
+    title        VARCHAR(255) NOT NULL,
+    reason       TEXT         NOT NULL,
+    signature    VARCHAR(255) NOT NULL,
+    seed_text    TEXT         NOT NULL,
+    genres       VARCHAR(255),
+    tempo        DOUBLE,
+    valence      DOUBLE,
+    energy       DOUBLE,
+    tracks_json  TEXT         NOT NULL,
+    status       VARCHAR(16)  NOT NULL DEFAULT 'PENDING',  -- PENDING | ACCEPTED | REJECTED
+    playlist_id  BIGINT,
+    created_at   DOUBLE,
+    decided_at   DOUBLE,
+    PRIMARY KEY (rec_id),
+    KEY idx_rec_user (user_id, status),
+    FOREIGN KEY (user_id)     REFERENCES USER(user_id),
+    FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id)
+) ENGINE=InnoDB;

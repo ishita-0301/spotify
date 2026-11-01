@@ -1,6 +1,21 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="panel">
+  <div class="row spread">
+    <h2>✨ Recommended for you <span class="muted" id="rec-count"></span></h2>
+    <div class="row">
+      <span class="live" id="rec-updated">connecting…</span>
+      <button type="button" class="ghost" id="rec-refresh"
+              title="Request fresh suggestions">Refresh</button>
+    </div>
+  </div>
+  <p class="muted">Personalized playlists generated automatically from your
+    listening taste — tempo, energy, mood, and favorite artists. Accept to save
+    it to your account; reject to dismiss it (we won't suggest it again).</p>
+  <div id="recs" class="recs"></div>
+</section>
+
+<section class="panel">
   <h2>Submit a music request</h2>
   <p class="muted">Each request becomes a <strong>job</strong> owned by you
     (<strong>{{ current_user.name }}</strong>, tier
@@ -105,5 +120,108 @@ refresh();
 setInterval(refresh, 1000);
 setInterval(tick, 1000);
 tick();
+
+// ---- AI recommendations ------------------------------------------------
+let recLastUpdate = null;
+let recBusy = false;   // pause polling while accepting/rejecting/refreshing
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function attrTags(r) {
+  const tags = [];
+  (r.genres || []).forEach(g => tags.push(`<span class="tag">${escapeHtml(g)}</span>`));
+  if (r.tempo != null)   tags.push(`<span class="tag">${Math.round(r.tempo)} BPM</span>`);
+  if (r.energy != null)  tags.push(`<span class="tag">energy ${Math.round(r.energy*100)}%</span>`);
+  if (r.valence != null) tags.push(`<span class="tag">mood ${Math.round(r.valence*100)}%</span>`);
+  return tags.join(' ');
+}
+
+function renderRecs(recs) {
+  document.getElementById('rec-count').textContent = '(' + recs.length + ')';
+  const box = document.getElementById('recs');
+  if (!recs.length) {
+    box.innerHTML = '<p class="muted">No new suggestions right now — ' +
+      'generate a few playlists, then hit Refresh.</p>';
+    return;
+  }
+  box.innerHTML = recs.map(r => {
+    const tracks = (r.tracks || []).map(t =>
+      `<li>${escapeHtml(t.name)} — <span class="muted">${escapeHtml(t.artist)}</span></li>`
+    ).join('');
+    return `<div class="rec-card" data-id="${r.rec_id}">
+      <div class="rec-head">
+        <strong>${escapeHtml(r.title)}</strong>
+        <div class="rec-actions">
+          <button type="button" class="rec-accept" data-id="${r.rec_id}">✓ Accept</button>
+          <button type="button" class="ghost rec-reject" data-id="${r.rec_id}">✕ Reject</button>
+        </div>
+      </div>
+      <p class="muted rec-reason">${escapeHtml(r.reason)}</p>
+      <div class="rec-attrs">${attrTags(r)}</div>
+      <ol class="rec-tracks">${tracks}</ol>
+    </div>`;
+  }).join('');
+}
+
+async function refreshRecs() {
+  if (recBusy) return;
+  try {
+    const res = await fetch('/api/recommendations');
+    const data = await res.json();
+    renderRecs(data.recommendations || []);
+    recLastUpdate = Date.now();
+  } catch (e) { /* ignore transient errors */ }
+}
+
+async function decideRec(recId, action) {
+  recBusy = true;
+  const card = document.querySelector(`.rec-card[data-id="${recId}"]`);
+  if (card) card.style.opacity = '0.4';
+  try {
+    await fetch(`/api/recommendations/${recId}/${action}`, {method: 'POST'});
+  } catch (e) { /* ignore */ }
+  finally {
+    recBusy = false;
+    refreshRecs();
+    if (action === 'accept') refresh();   // show the newly saved playlist/job
+  }
+}
+
+document.getElementById('recs').addEventListener('click', ev => {
+  const accept = ev.target.closest('.rec-accept');
+  const reject = ev.target.closest('.rec-reject');
+  if (accept) decideRec(accept.dataset.id, 'accept');
+  else if (reject) decideRec(reject.dataset.id, 'reject');
+});
+
+document.getElementById('rec-refresh').addEventListener('click', async () => {
+  recBusy = true;
+  document.getElementById('recs').style.opacity = '0.4';
+  try {
+    const res = await fetch('/api/recommendations/refresh', {method: 'POST'});
+    const data = await res.json();
+    renderRecs(data.recommendations || []);
+    recLastUpdate = Date.now();
+  } catch (e) { /* ignore */ }
+  finally {
+    document.getElementById('recs').style.opacity = '';
+    recBusy = false;
+  }
+});
+
+function recTick() {
+  const el = document.getElementById('rec-updated');
+  if (recLastUpdate === null) { el.textContent = 'connecting…'; return; }
+  const secs = Math.round((Date.now() - recLastUpdate) / 1000);
+  el.textContent = secs <= 0 ? '● live · updated just now' : `● live · updated ${secs}s ago`;
+}
+
+refreshRecs();
+setInterval(refreshRecs, 5000);
+setInterval(recTick, 1000);
+recTick();
 </script>
 {% endblock %}

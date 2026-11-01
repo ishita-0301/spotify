@@ -69,6 +69,29 @@ CREATE TABLE IF NOT EXISTS PLAYLIST_TRACK (
     FOREIGN KEY (track_id)    REFERENCES TRACK(track_id)
 );
 
+-- AI-generated playlist recommendations awaiting the user's accept/reject.
+-- tracks_json holds the previewed tracks; on accept they become a real PLAYLIST.
+CREATE TABLE IF NOT EXISTS RECOMMENDATION (
+    rec_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL,
+    title        TEXT    NOT NULL,
+    reason       TEXT    NOT NULL,          -- why it was recommended
+    signature    TEXT    NOT NULL,          -- stable key: never re-show a rejected one
+    seed_text    TEXT    NOT NULL,          -- the mood used to generate it
+    genres       TEXT,                      -- comma-joined target genres
+    tempo        REAL,
+    valence      REAL,
+    energy       REAL,
+    tracks_json  TEXT    NOT NULL,          -- preview tracks as JSON
+    status       TEXT    NOT NULL DEFAULT 'PENDING',  -- PENDING | ACCEPTED | REJECTED
+    playlist_id  INTEGER,                   -- set once accepted
+    created_at   REAL,
+    decided_at   REAL,
+    FOREIGN KEY (user_id)     REFERENCES USER(user_id),
+    FOREIGN KEY (playlist_id) REFERENCES PLAYLIST(playlist_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_exec_scheduler ON JOB_EXECUTION(scheduler);
 CREATE INDEX IF NOT EXISTS idx_exec_tier      ON JOB_EXECUTION(tier);
 CREATE INDEX IF NOT EXISTS idx_job_state      ON JOB(state);
+CREATE INDEX IF NOT EXISTS idx_rec_user       ON RECOMMENDATION(user_id, status);

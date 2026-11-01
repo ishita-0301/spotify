@@ -8,16 +8,36 @@ and users.
 from __future__ import annotations
 
 import functools
+import json
 import threading
 
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, session, url_for)
 
 import config
+from wms import recommender
 from wms.database import Database
 from wms.engine import Engine
 from wms.schedulers import build, ALL_SCHEDULERS
 from wms.users import Users, Tier
+
+
+def _rec_payload(rec: dict) -> dict:
+    """Shape a RECOMMENDATION row for the dashboard JSON (tracks parsed out)."""
+    try:
+        tracks = json.loads(rec["tracks_json"])
+    except (TypeError, ValueError):
+        tracks = []
+    return {
+        "rec_id": rec["rec_id"],
+        "title": rec["title"],
+        "reason": rec["reason"],
+        "genres": [g for g in (rec.get("genres") or "").split(",") if g],
+        "tempo": rec["tempo"],
+        "valence": rec["valence"],
+        "energy": rec["energy"],
+        "tracks": tracks,
+    }
 
 
 def estimate_burst(text: str) -> int:
@@ -203,5 +223,47 @@ def create_app() -> Flask:
         return jsonify({"by_scheduler": db.analytics(),
                         "by_tier": db.analytics_by_tier(),
                         "by_user": db.analytics_by_user()})
+
+    # ---- AI recommendations ---------------------------------------------
+    @app.route("/api/recommendations")
+    @login_required
+    def api_recommendations():
+        """Auto-generate (top up) and return the user's PENDING suggestions, so
+        personalized recommendations appear on the dashboard with no manual
+        request. Generation uses the shared, rate-limited providers."""
+        user = current_user()
+        recs = recommender.ensure(db, user)
+        return jsonify({"recommendations": [_rec_payload(r) for r in recs]})
+
+    @app.route("/api/recommendations/refresh", methods=["POST"])
+    @login_required
+    def refresh_recommendations():
+        user = current_user()
+        recommender.generate(db, user)
+        recs = db.list_recommendations(user["user_id"], "PENDING")
+        return jsonify({"recommendations": [_rec_payload(r) for r in recs]})
+
+    @app.route("/api/recommendations/<int:rec_id>/accept", methods=["POST"])
+    @login_required
+    def accept_recommendation(rec_id: int):
+        user = current_user()
+        rec = db.get_recommendation(rec_id)
+        if not rec or rec["user_id"] != user["user_id"]:
+            return jsonify({"error": "not found"}), 404
+        if rec["status"] != "PENDING":
+            return jsonify({"error": "already decided"}), 409
+        result = db.accept_recommendation(
+            rec, owner=user["name"], user_id=user["user_id"], tier=user["tier"])
+        return jsonify({"ok": True, **result})
+
+    @app.route("/api/recommendations/<int:rec_id>/reject", methods=["POST"])
+    @login_required
+    def reject_recommendation(rec_id: int):
+        user = current_user()
+        rec = db.get_recommendation(rec_id)
+        if not rec or rec["user_id"] != user["user_id"]:
+            return jsonify({"error": "not found"}), 404
+        db.reject_recommendation(rec_id)
+        return jsonify({"ok": True})
 
     return app

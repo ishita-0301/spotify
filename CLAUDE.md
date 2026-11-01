@@ -45,6 +45,7 @@ wms/
   models.py             Job (+ user_id/tier) + lifecycle + metrics
   auth.py               stdlib PBKDF2 password hashing (hash/verify)
   users.py              users, tiers, weights, register/authenticate
+  recommender.py        AI playlist recommendations from a per-user taste profile
   schedulers.py         FCFS, SJF, Priority, RoundRobin, FairShare, WFQ
   job_queue.py          thread-safe ready queue
   resource_manager.py   worker slots, DB pool, API rate limiter

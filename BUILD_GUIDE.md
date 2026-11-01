@@ -88,6 +88,38 @@ Both the dashboard and the analytics page refresh themselves with no reload:
 
 ---
 
+## AI recommendations (automatic, per-user)
+
+When a user opens the dashboard, WMS automatically surfaces **personalized
+playlist suggestions** — no manual request needed (`wms/recommender.py`):
+
+- **Taste profile.** Because real Spotify account access is blocked by the
+  Premium wall, "listening preferences" are derived from the user's **own WMS
+  history**: `build_profile` averages the tempo / valence / energy and ranks the
+  favorite artists of the tracks in playlists they've generated, and collects
+  their recent request moods.
+- **Generation.** `generate` synthesizes suggestions from the user's own moods
+  first ("More like …"), then from a shuffled set of curated moods, through the
+  same **Gemini** (`analyze`) + **Spotify** (`search`) providers the engine uses.
+  Each suggestion's target attributes are **blended toward the user's averages**,
+  so it reflects their measured taste. Each one carries a title, a plain-language
+  **reason**, attribute tags, and a **track preview**.
+- **Approval.** Every suggestion is PENDING until the user decides. **Accept**
+  calls `Database.accept_recommendation` — a single **ACID transaction** that
+  inserts a recommendation-sourced `JOB` (state `TERMINATED`, scheduler
+  `RECOMMENDER`), the `PLAYLIST`, its `TRACK` + `PLAYLIST_TRACK` rows, and flips
+  the `RECOMMENDATION` to ACCEPTED. **Reject** marks it REJECTED. Nothing is ever
+  saved (or written to Spotify) without approval.
+- **No repeats.** Each suggestion has a stable `signature`; `generate` skips any
+  signature already PENDING or REJECTED, so a dismissed idea never comes back and
+  **Refresh** always explores new territory.
+- **UI.** The "✨ Recommended for you" panel polls `/api/recommendations` (which
+  auto-tops-up to `WMS_REC_COUNT` PENDING suggestions) every 5s; accept / reject
+  / refresh hit `POST /api/recommendations/<id>/{accept,reject}` and
+  `/refresh`, with ownership (404) and already-decided (409) guards.
+
+---
+
 ## The experiments
 
 `benchmark.py` runs two experiments (results also feed the web **/analytics**
@@ -113,11 +145,14 @@ Because all jobs are enqueued before the single worker starts, they effectively
 
 ## Database
 
-Six normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
-`PLAYLIST_TRACK` (`db/schema_sqlite.sql`). `JOB` and `JOB_EXECUTION` carry
-`user_id` + `tier` so the fairness analytics can group by user and tier. `USER`
-also holds `password_hash` for login; `Database.init_schema` migrates older
-databases by adding the column if it's missing.
+Seven normalized tables — `USER`, `JOB`, `JOB_EXECUTION`, `TRACK`, `PLAYLIST`,
+`PLAYLIST_TRACK`, and `RECOMMENDATION` (`db/schema_sqlite.sql`). `JOB` and
+`JOB_EXECUTION` carry `user_id` + `tier` so the fairness analytics can group by
+user and tier. `USER` also holds `password_hash` for login; `Database.init_schema`
+migrates older databases by adding the column if it's missing. `RECOMMENDATION`
+holds each AI suggestion's status (PENDING / ACCEPTED / REJECTED), its preview
+tracks (as JSON) and a link to the saved `playlist_id` once accepted — new
+databases pick it up via `CREATE TABLE IF NOT EXISTS`, so no migration is needed.
 
 Switch to MySQL for submission:
 
@@ -154,6 +189,8 @@ downloads the playlist.
 - `WMS_QUANTUM_MS` — Round Robin time slice.
 - `WMS_API_RATE` — external API requests/minute (rate limiter).
 - `WMS_DB_BACKEND` — `sqlite` (default) or `mysql`.
+- `WMS_REC_COUNT` — PENDING recommendations kept in front of each user (default 3).
+- `WMS_REC_PREVIEW` — preview tracks shown per recommendation (default 5).
 
 ---
 
@@ -171,4 +208,9 @@ downloads the playlist.
 - [ ] **Run fairness demo** under FCFS vs WFQ shows PREMIUM served faster under WFQ
 - [ ] `/analytics` shows per-scheduler, per-tier, and per-user tables
 - [ ] A playlist opens at `/playlist/<id>` and exports via `/export/<id>.m3u`
+- [ ] The dashboard shows **✨ Recommended for you** suggestions automatically on
+      login, each with a title, reason, attribute tags, and a track preview
+- [ ] **Accept** saves the playlist (it appears in the jobs table and at
+      `/playlist/<id>`); **Reject** dismisses it and it never reappears, even after
+      **Refresh**; another user can't accept/reject yours
 - [ ] Runs with no API keys and no internet (mock fallback)

@@ -8,13 +8,14 @@ back. Works against SQLite (default) or MySQL via a paramstyle swap.
 """
 from __future__ import annotations
 
+import json
 import os
 import queue
 import threading
 from typing import List, Optional
 
 import config
-from .models import Job
+from .models import Job, next_job_id, now_ms
 
 _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -287,6 +288,145 @@ class Database:
             try:
                 self._exec(conn, "DELETE FROM JOB_EXECUTION", ())
                 conn.commit()
+            finally:
+                self.put_conn(conn)
+
+    # ---- taste profile (for AI recommendations) --------------------------
+    def recent_requests(self, user_id: int, limit: int = 20) -> List[str]:
+        """The user's most recent playlist requests — a proxy for their taste."""
+        rows = self._query(
+            "SELECT request_text FROM JOB WHERE user_id=? "
+            "ORDER BY job_id DESC LIMIT ?", (user_id, limit))
+        return [r["request_text"] for r in rows]
+
+    def taste_tracks(self, user_id: int, limit: int = 100) -> List[dict]:
+        """Attributes + artists of the tracks in playlists this user generated."""
+        rows = self._query(
+            "SELECT t.artist, t.tempo, t.valence, t.energy FROM TRACK t "
+            "JOIN PLAYLIST_TRACK pt ON pt.track_id = t.track_id "
+            "JOIN PLAYLIST p ON p.playlist_id = pt.playlist_id "
+            "JOIN JOB j ON j.job_id = p.job_id "
+            "WHERE j.user_id=? ORDER BY t.track_id DESC LIMIT ?",
+            (user_id, limit))
+        return [dict(r) for r in rows]
+
+    # ---- RECOMMENDATION --------------------------------------------------
+    def insert_recommendation(self, user_id: int, title: str, reason: str,
+                              signature: str, seed_text: str, attrs: dict,
+                              tracks: List[dict]) -> int:
+        genres = ",".join(attrs.get("genres", []))
+        sql = self._q(
+            "INSERT INTO RECOMMENDATION (user_id, title, reason, signature, "
+            "seed_text, genres, tempo, valence, energy, tracks_json, status, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)"
+        )
+        params = (user_id, title, reason, signature, seed_text, genres,
+                  attrs.get("tempo"), attrs.get("valence"), attrs.get("energy"),
+                  json.dumps(tracks), now_ms())
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(sql, params)
+                rec_id = cur.lastrowid
+                conn.commit()
+                return rec_id
+            finally:
+                self.put_conn(conn)
+
+    _REC_COLS = ("rec_id, user_id, title, reason, signature, seed_text, genres, "
+                 "tempo, valence, energy, tracks_json, status, playlist_id, "
+                 "created_at, decided_at")
+
+    def list_recommendations(self, user_id: int, status: str = "PENDING",
+                             limit: int = 20) -> List[dict]:
+        rows = self._query(
+            f"SELECT {self._REC_COLS} FROM RECOMMENDATION "
+            "WHERE user_id=? AND status=? ORDER BY rec_id DESC LIMIT ?",
+            (user_id, status, limit))
+        return [dict(r) for r in rows]
+
+    def get_recommendation(self, rec_id: int) -> Optional[dict]:
+        rows = self._query(
+            f"SELECT {self._REC_COLS} FROM RECOMMENDATION WHERE rec_id=?",
+            (rec_id,))
+        return dict(rows[0]) if rows else None
+
+    def count_recommendations(self, user_id: int, status: str = "PENDING") -> int:
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM RECOMMENDATION WHERE user_id=? AND status=?",
+            (user_id, status))
+        return int(rows[0]["n"]) if rows else 0
+
+    def recommendation_signatures(self, user_id: int) -> set:
+        """Signatures already PENDING or REJECTED — so we never regenerate a
+        suggestion the user has dismissed, nor duplicate a live one."""
+        rows = self._query(
+            "SELECT signature FROM RECOMMENDATION WHERE user_id=? "
+            "AND status IN ('PENDING', 'REJECTED')", (user_id,))
+        return {r["signature"] for r in rows}
+
+    def reject_recommendation(self, rec_id: int) -> None:
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                self._exec(conn, self._q(
+                    "UPDATE RECOMMENDATION SET status='REJECTED', decided_at=? "
+                    "WHERE rec_id=? AND status='PENDING'"), (now_ms(), rec_id))
+                conn.commit()
+            finally:
+                self.put_conn(conn)
+
+    def accept_recommendation(self, rec: dict, owner: str, user_id: int,
+                              tier: str) -> dict:
+        """Atomically turn an accepted recommendation into a saved playlist.
+
+        One transaction inserts a (terminated) recommendation-sourced JOB, the
+        PLAYLIST, its TRACK + PLAYLIST_TRACK rows, and flips the RECOMMENDATION
+        to ACCEPTED — all-or-nothing, so we never leave a half-saved playlist.
+        """
+        tracks = json.loads(rec["tracks_json"])
+        now = now_ms()
+        job_id = next_job_id()
+        with self._write_lock:
+            conn = self.get_conn()
+            try:
+                cur = conn.cursor()
+                # A JOB row records the accepted recommendation in history.
+                cur.execute(self._q(
+                    "INSERT INTO JOB (job_id, user_id, owner, tier, request_text, "
+                    "priority, burst_ms, state, scheduler, created_at, enqueued_at, "
+                    "started_at, finished_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'TERMINATED', 'RECOMMENDER', "
+                    "?, ?, ?, ?)"),
+                    (job_id, user_id, owner, tier, rec["title"], 5, 0,
+                     now, now, now, now))
+                # PLAYLIST
+                cur.execute(self._q(
+                    "INSERT INTO PLAYLIST (job_id, title, created_at) "
+                    "VALUES (?, ?, ?)"), (job_id, rec["title"], now))
+                playlist_id = cur.lastrowid
+                # TRACK + PLAYLIST_TRACK
+                for pos, t in enumerate(tracks, start=1):
+                    cur.execute(self._q(
+                        "INSERT INTO TRACK (name, artist, spotify_url, tempo, "
+                        "valence, energy) VALUES (?, ?, ?, ?, ?, ?)"),
+                        (t["name"], t["artist"], t.get("spotify_url"),
+                         t.get("tempo"), t.get("valence"), t.get("energy")))
+                    track_id = cur.lastrowid
+                    cur.execute(self._q(
+                        "INSERT INTO PLAYLIST_TRACK (playlist_id, track_id, position) "
+                        "VALUES (?, ?, ?)"), (playlist_id, track_id, pos))
+                # RECOMMENDATION — mark accepted and link the saved playlist
+                cur.execute(self._q(
+                    "UPDATE RECOMMENDATION SET status='ACCEPTED', playlist_id=?, "
+                    "decided_at=? WHERE rec_id=?"),
+                    (playlist_id, now, rec["rec_id"]))
+                conn.commit()
+                return {"playlist_id": playlist_id, "job_id": job_id}
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 self.put_conn(conn)
 

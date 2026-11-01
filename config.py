@@ -71,6 +71,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 # Number of tracks each generated playlist contains.
 PLAYLIST_SIZE = int(os.environ.get("WMS_PLAYLIST_SIZE", "10"))
 
+# --- AI recommendations -----------------------------------------------------
+# How many PENDING recommendations to keep in front of the user, and how many
+# preview tracks each recommendation card shows.
+RECOMMENDATION_COUNT = int(os.environ.get("WMS_REC_COUNT", "3"))
+RECOMMENDATION_PREVIEW = int(os.environ.get("WMS_REC_PREVIEW", "5"))
+
 # --- Web sessions -----------------------------------------------------------
 # Secret used to sign the Flask session cookie that keeps a user logged in.
 # Override with WMS_SECRET_KEY in production; the default is fine for the local
